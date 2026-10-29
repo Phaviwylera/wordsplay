@@ -47,3 +47,26 @@ test('browser fallback reports a failed indexer rather than a zero balance', asy
   const { scanDirect } = require('../public/direct-scan');
   await assert.rejects(scanDirect(address, 'ethereum', async () => ({ ok: false, status: 503 })), /503/);
 });
+
+test('rejects missing or malformed balances rather than treating them as zero', async () => {
+  for (const bad of [null, undefined, '-1', 'oops']) {
+    const fetcher = async (url) => ({ ok: true, json: async () => url.endsWith('/stats') ? {} : url.endsWith('/token-balances') ? [] : { coin_balance: bad } });
+    await assert.rejects(scanWallet(address, 'ethereum', fetcher), /Invalid balance/);
+  }
+  const fetcher = async (url) => ({ ok: true, json: async () => url.endsWith('/stats') ? {} : url.endsWith('/token-balances') ? [{ value: null }] : { coin_balance: '0' } });
+  await assert.rejects(scanWallet(address, 'ethereum', fetcher), /Invalid balance/);
+  const { scanDirect } = require('../public/direct-scan');
+  await assert.rejects(scanDirect(address, 'ethereum', fetcher), /Invalid balance/);
+});
+
+test('shares one price request per network between concurrent scans', async () => {
+  let statsCalls = 0;
+  const fetcher = async (url) => {
+    if (url.endsWith('/stats')) { statsCalls++; await new Promise(resolve => setTimeout(resolve, 10)); }
+    return { ok: true, json: async () => url.endsWith('/stats') ? { coin_price: '2000' } : url.endsWith('/token-balances') ? [] : { coin_balance: '0' } };
+  };
+  const [first, second] = await Promise.all([scanWallet(address, 'base', fetcher), scanWallet('0x2222222222222222222222222222222222222222', 'base', fetcher)]);
+  assert.equal(statsCalls, 1);
+  assert.equal(first.assets[0].price, '2000');
+  assert.equal(second.assets[0].price, '2000');
+});

@@ -8,12 +8,23 @@ const shortAddress = (address) => `${address.slice(0, 6)}...${address.slice(-4)}
 let wallets = [];
 try {
   const saved = JSON.parse(localStorage.getItem('walleto.wallets') || '[]');
-  if (Array.isArray(saved)) wallets = saved.filter(w => typeof w.address === 'string' && /^0x[a-fA-F0-9]{40}$/.test(w.address)).map(w => ({ address: w.address }));
+  if (Array.isArray(saved)) {
+    const seen = new Set();
+    wallets = saved.filter(w => {
+      if (!w || typeof w.address !== 'string' || !/^0x[a-fA-F0-9]{40}$/.test(w.address)) return false;
+      const address = w.address.toLowerCase();
+      if (seen.has(address)) return false;
+      seen.add(address); return true;
+    }).map(w => ({ address: w.address }));
+  }
 } catch (_) { /* Storage may be unavailable. */ }
 let scanData = { total: 0, completed: 0, failed: 0, assets: [], knownValue: 0, unpriced: 0 };
 let walletPage = 0;
 let assetPage = 0;
 const PAGE_SIZE = 100;
+const SCAN_CONCURRENCY = 8;
+let walletStates = new Map();
+let zeroWallets = new Set();
 let scanVersion = 0;
 let loading = false;
 let scanController = null;
@@ -49,6 +60,13 @@ function updatePager(prefix, page, count) {
   $(`#${prefix}-prev`).disabled = page === 0;
   $(`#${prefix}-next`).disabled = (page + 1) * PAGE_SIZE >= count;
 }
+function walletScanLabel(wallet) {
+  const state = walletStates.get(wallet.address.toLowerCase());
+  if (!state) return { css: '', label: 'Waiting to scan' };
+  if (state.done < Object.keys(networks).length) return { css: '', label: `Scanning ${state.done}/${Object.keys(networks).length} networks` };
+  if (state.failed) return { css: 'incomplete', label: `⚠ Incomplete · ${state.failed} failed` };
+  return { css: 'complete', label: state.hasAssets ? '✓ Scanned · assets found' : '✓ Scanned · no assets found' };
+}
 function render() {
   const selected = $('#network-filter').value;
   const { total, completed, failed, assets: items, knownValue, unpriced } = scanData;
@@ -64,7 +82,7 @@ function render() {
   $('#wallet-empty').hidden = wallets.length > 0;
   walletPage = Math.min(walletPage, Math.max(0, Math.ceil(wallets.length / PAGE_SIZE) - 1));
   assetPage = Math.min(assetPage, Math.max(0, Math.ceil(visible.length / PAGE_SIZE) - 1));
-  $('#wallet-list').innerHTML = wallets.slice(walletPage * PAGE_SIZE, (walletPage + 1) * PAGE_SIZE).map(wallet => `<div class="wallet-row"><span class="wallet-avatar">◈</span><div class="wallet-info"><strong title="${escapeHtml(wallet.address)}">${escapeHtml(wallet.address)}</strong><span>Watch-only address</span></div><button class="remove-wallet" data-address="${escapeHtml(wallet.address)}" aria-label="Remove ${escapeHtml(wallet.address)}" title="Remove wallet">×</button></div>`).join('');
+  $('#wallet-list').innerHTML = wallets.slice(walletPage * PAGE_SIZE, (walletPage + 1) * PAGE_SIZE).map(wallet => { const state = walletScanLabel(wallet); return `<div class="wallet-row"><span class="wallet-avatar">◈</span><div class="wallet-info"><strong title="${escapeHtml(wallet.address)}">${escapeHtml(wallet.address)}</strong><span class="wallet-scan-state ${state.css}">${escapeHtml(state.label)}</span></div><button class="remove-wallet" data-address="${escapeHtml(wallet.address)}" aria-label="Remove ${escapeHtml(wallet.address)}" title="Remove wallet">×</button></div>`; }).join('');
   $('#asset-list').innerHTML = visible.slice(assetPage * PAGE_SIZE, (assetPage + 1) * PAGE_SIZE).map(asset => `<tr><td><div class="asset-name"><span class="token-icon" style="--token-color:${asset.meta.color}">${escapeHtml(asset.symbol.slice(0, 1).toUpperCase())}</span><span><strong>${escapeHtml(asset.name)}</strong><small>${escapeHtml(asset.symbol)} · ${escapeHtml(shortAddress(asset.wallet.address))}${asset.tokenId ? ` · #${escapeHtml(asset.tokenId)}` : ''}</small></span></div></td><td><span class="network-pill"><i style="background:${asset.meta.color}"></i>${asset.meta.name}</span></td><td><strong>${quantity(asset.balance)}</strong><small>${escapeHtml(asset.symbol)}</small></td><td><strong>${asset.price === null ? '—' : money(asset.balance * asset.price)}</strong><small>${asset.price === null ? (asset.nft ? 'Collectible' : 'Price unavailable') : 'USD'}</small></td></tr>`).join('');
   updatePager('wallet', walletPage, wallets.length);
   updatePager('asset', assetPage, visible.length);
@@ -82,8 +100,27 @@ function render() {
   const status = $('#scan-status');
   status.hidden = !wallets.length || (!failed && !pending);
   status.textContent = pending ? `Scanning ${pending} wallet network${pending === 1 ? '' : 's'}…` : `${failed} wallet network${failed === 1 ? '' : 's'} could not be scanned. Results may be incomplete. Use refresh to try again.`;
+  const percentage = total ? Math.floor(completed * 100 / total) : 0;
+  $('#scan-progress').hidden = !wallets.length;
+  $('#progress-bar').value = percentage;
+  $('#progress-percent').textContent = `${percentage}%`;
+  $('#progress-text').textContent = pending ? 'Scanning balances…' : failed ? 'Scan finished with errors' : 'Scan complete';
+  $('#progress-detail').textContent = `${completed} of ${total} network checks finished${failed ? ` · ${failed} failed` : ''}. A completed check may have failed.`;
+  const eligible = zeroWallets.size;
+  $('#remove-zero').hidden = !wallets.length;
+  $('#remove-zero').disabled = loading || eligible === 0;
+  $('#zero-help').hidden = !wallets.length;
+  $('#zero-help').textContent = loading ? 'Available after all checks finish. Failed scans are never treated as zero.' : 'Only wallets with successful scans on all four supported networks and no indexed assets are eligible. Failed scans are excluded.';
+  $('#remove-zero').textContent = `Remove zero-balance wallets (${eligible})`;
   $('#refresh').classList.toggle('spinning', loading);
   $('#refresh').disabled = loading || !wallets.length;
+}
+function recordWalletScan(wallet, hasAssets, failed, totalNetworks) {
+  const address = wallet.address.toLowerCase();
+  const state = walletStates.get(address) || { done: 0, failed: 0, hasAssets: false };
+  state.done++; state.failed += failed ? 1 : 0; state.hasAssets ||= hasAssets;
+  walletStates.set(address, state);
+  if (state.done === totalNetworks && !state.failed && !state.hasAssets) zeroWallets.add(address);
 }
 // Keep requests bounded for large imports. Cancel the previous scan when the
 // tracked address list changes, and never send recovery phrases to an indexer.
@@ -108,6 +145,7 @@ async function scan() {
   const scanWallets = wallets.slice();
   const networkKeys = Object.keys(networks);
   scanData = { total: scanWallets.length * networkKeys.length, completed: 0, failed: 0, assets: [], knownValue: 0, unpriced: 0 };
+  walletStates = new Map(); zeroWallets = new Set();
   loading = scanData.total > 0; render();
   let next = 0;
   async function worker() {
@@ -128,6 +166,8 @@ async function scan() {
           data = await scanDirect(address, network, (url, options) => scanRequest(url, options, signal, 15000));
         }
         if (version === scanVersion && !signal.aborted) {
+          if (!Array.isArray(data.assets) || !data.assets.some(asset => asset && asset.type === 'native') || data.assets.some(asset => !asset || typeof asset.rawBalance !== 'string' || !/^\d+$/.test(asset.rawBalance))) throw new Error('Invalid balances');
+          const hasAssets = data.assets.some(asset => BigInt(asset.rawBalance) > 0n);
           for (const asset of data.assets) {
             const balance = amount(asset.rawBalance, asset.decimals);
             if (balance <= 0) continue;
@@ -137,14 +177,15 @@ async function scan() {
             if (price === null) scanData.unpriced++; else scanData.knownValue += balance * price;
           }
           scanData.completed++;
+          recordWalletScan(wallet, hasAssets, false, networkKeys.length);
         }
       } catch (_) {
-        if (version === scanVersion && !signal.aborted) { scanData.failed++; scanData.completed++; }
+        if (version === scanVersion && !signal.aborted) { scanData.failed++; scanData.completed++; recordWalletScan(wallet, false, true, networkKeys.length); }
       }
       if (version === scanVersion && !signal.aborted) scheduleRender();
     }
   }
-  await Promise.all(Array.from({ length: Math.min(4, scanData.total) }, worker));
+  await Promise.all(Array.from({ length: Math.min(SCAN_CONCURRENCY, scanData.total) }, worker));
   if (version === scanVersion) {
     if (renderTimer !== null) { clearTimeout(renderTimer); renderTimer = null; }
     loading = false; render();
@@ -167,14 +208,6 @@ $('#seed-file').addEventListener('change', () => {
   // Do not display the file name: it might itself contain sensitive information.
   $('#file-name').textContent = $('#seed-file').files.length ? 'Text file selected' : 'No file selected';
 });
-function readTextFile(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(new Error('Could not read file'));
-    reader.readAsText(file, 'UTF-8');
-  });
-}
 $('#seed-form').addEventListener('submit', async event => {
   event.preventDefault();
   const submit = $('#seed-form button[type="submit"]');
@@ -184,17 +217,17 @@ $('#seed-form').addEventListener('submit', async event => {
   // Clear visible secrets and file selection immediately, including on errors.
   $('#seed-phrases').value = ''; $('#seed-file').value = ''; $('#file-name').textContent = 'No file selected';
   if (!pasted.trim() && !file) return importStatus('Paste a seed phrase or choose a .txt file.', true);
-  if (pasted.length > 256 * 1024) return importStatus('Keep pasted text at or below 256 KiB.', true);
-  if (file && (!/\.txt$/i.test(file.name) || file.size > 25 * 1024 * 1024)) return importStatus('Choose a .txt file at or below 25 MiB.', true);
+  if (file && !/\.txt$/i.test(file.name)) return importStatus('Choose a UTF-8 .txt file.', true);
   submit.disabled = true;
   try {
     const sources = [];
     if (pasted.trim()) sources.push({ label: 'Pasted text', text: pasted });
-    if (file) sources.push({ label: 'Text file', text: await readTextFile(file) });
+    if (file) sources.push({ label: 'Text file', file });
     const addresses = []; const problems = [];
     for (const source of sources) {
       importStatus(`Processing ${source.label.toLowerCase()} locally…`);
-      const result = await window.deriveWatchAddresses(source.text, (done, total) => importStatus(`Processing ${source.label.toLowerCase()}: ${Math.floor(done * 100 / total)}%…`));
+      const updateProgress = (done, total) => importStatus(`Processing ${source.label.toLowerCase()}: ${total ? Math.floor(done * 100 / total) : 100}%…`);
+      const result = source.file ? await window.deriveWatchFile(source.file, updateProgress) : await window.deriveWatchAddresses(source.text, updateProgress);
       for (const address of result.addresses) addresses.push(address);
       if (result.invalid.length) {
         const shown = result.invalid.slice(0, 20).join(', ');
@@ -216,6 +249,18 @@ $('#wallet-list').addEventListener('click', event => {
   wallets = wallets.filter(wallet => wallet.address.toLowerCase() !== button.dataset.address.toLowerCase());
   const saved = persist(); scan();
   if (!saved) importStatus('The removal could not be saved in browser storage.', true);
+});
+$('#remove-zero').addEventListener('click', () => {
+  if (loading || !zeroWallets.size) return;
+  const count = zeroWallets.size;
+  if (!confirm(`Remove ${count} wallet${count === 1 ? '' : 's'} with no assets found on Ethereum, Base, Arbitrum and Optimism? This removes only the watch list entries, not the wallets or funds. Other chains and unindexed assets are not checked.`)) return;
+  wallets = wallets.filter(wallet => !zeroWallets.has(wallet.address.toLowerCase()));
+  for (const address of zeroWallets) walletStates.delete(address);
+  zeroWallets.clear();
+  scanData.total -= count * Object.keys(networks).length;
+  scanData.completed -= count * Object.keys(networks).length;
+  const saved = persist(); render();
+  importStatus(saved ? `Removed ${count} zero-balance wallet${count === 1 ? '' : 's'} from the watch list.` : `Removed ${count} wallet${count === 1 ? '' : 's'} for this session, but browser storage could not save the change.`, !saved);
 });
 $('#network-filter').addEventListener('change', () => { assetPage = 0; render(); });
 $('#wallet-prev').addEventListener('click', () => { walletPage--; render(); });

@@ -10,13 +10,15 @@ const phrase1 = 'test test test test test test test test test test test junk';
 const phrase2 = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 const address1 = Wallet.fromPhrase(phrase1).address;
 const address2 = Wallet.fromPhrase(phrase2).address;
+const zeroNative = { name: 'Ether', symbol: 'ETH', type: 'native', rawBalance: '0', decimals: 18, price: null };
 const bundle = esbuild.buildSync({ entryPoints: ['src/derive.js'], bundle: true, platform: 'browser', format: 'iife', write: false }).outputFiles[0].text;
 function setup() {
   const dom = new JSDOM(fs.readFileSync('public/index.html', 'utf8'), { url: 'https://wallet.example/', runScripts: 'outside-only' });
   const w = dom.window;
   const requests = [];
   w.AbortSignal = global.AbortSignal;
-  w.fetch = async url => { requests.push(url); return { ok: true, json: async () => ({ assets: [] }) }; };
+  w.TextDecoder = global.TextDecoder;
+  w.fetch = async url => { requests.push(url); return { ok: true, json: async () => ({ assets: [zeroNative] }) }; };
   w.eval(bundle);
   w.eval(fs.readFileSync('public/app.js', 'utf8'));
   return { dom, w, requests, $: id => w.document.getElementById(id) };
@@ -98,7 +100,7 @@ test('imports more than 50 distinct phrases from a text file and bounds scan con
     requests.push(url); active++; maxActive = Math.max(active, maxActive);
     await new Promise(resolve => setTimeout(resolve, 2));
     active--;
-    return { ok: true, json: async () => ({ assets: [] }) };
+    return { ok: true, json: async () => ({ assets: [zeroNative] }) };
   };
   const file = new w.File([`${phrases.join('\n')}\n${phrases[0]}\ninvalid`], 'many.txt', { type: 'text/plain' });
   Object.defineProperty($('seed-file'), 'files', { configurable: true, value: [file] });
@@ -114,18 +116,19 @@ test('imports more than 50 distinct phrases from a text file and bounds scan con
   for (let i = 0; i < 200 && $('refresh').disabled; i++) await wait();
   assert.equal($('refresh').disabled, false, 'all network scans finished');
   assert.equal(requests.length, 55 * 4);
-  assert.ok(maxActive <= 4, `at most four simultaneous scans, observed ${maxActive}`);
+  assert.ok(maxActive <= 8, `at most eight simultaneous scans, observed ${maxActive}`);
   assert.ok(requests.every(url => !phrases.some(phrase => url.includes(phrase))));
   dom.window.close();
 });
 
-test('reports the remaining file size limit and does not process an oversized file', async () => {
+test('accepts a file larger than the old 25 MiB limit without uploading its contents', { timeout: 60000 }, async () => {
   const { dom, w, $, requests } = setup();
-  const file = new w.File(['x'.repeat(25 * 1024 * 1024 + 1)], 'too-large.txt', { type: 'text/plain' });
+  const file = new w.File(['x'.repeat(25 * 1024 * 1024 + 1)], 'large.txt', { type: 'text/plain' });
   Object.defineProperty($('seed-file'), 'files', { configurable: true, value: [file] });
   submit(w, $('seed-form'));
-  await wait();
-  assert.match($('import-status').textContent, /25 MiB/);
+  for (let i = 0; i < 500 && $('seed-form').querySelector('button[type="submit"]').disabled; i++) await wait();
+  assert.match($('import-status').textContent, /invalid line 1/);
+  assert.doesNotMatch($('import-status').textContent, /25 MiB/);
   assert.equal(w.localStorage.getItem('walleto.wallets'), null);
   assert.equal(requests.length, 0);
   dom.window.close();
@@ -181,7 +184,7 @@ test('paginates large wallet lists without dropping entries', async () => {
   const w = dom.window;
   const wallets = Array.from({ length: 105 }, (_, i) => ({ address: `0x${(i + 1).toString(16).padStart(40, '0')}` }));
   w.localStorage.setItem('walleto.wallets', JSON.stringify(wallets));
-  w.fetch = async () => ({ ok: true, json: async () => ({ assets: [] }) });
+  w.fetch = async () => ({ ok: true, json: async () => ({ assets: [zeroNative] }) });
   w.eval(bundle); w.eval(fs.readFileSync('public/app.js', 'utf8'));
   const $ = id => w.document.getElementById(id);
   assert.equal($('wallet-list').querySelectorAll('.wallet-row').length, 100);
@@ -227,5 +230,137 @@ test('warns when browser storage is full instead of claiming the import was save
   assert.match($('import-status').textContent, /storage is full or unavailable/);
   assert.match($('import-status').textContent, /only last this session/);
   assert.equal($('wallet-count').textContent, '1');
+  dom.window.close();
+});
+
+test('shows network progress and ticks only successfully scanned wallets', async () => {
+  const dom = new JSDOM(fs.readFileSync('public/index.html', 'utf8'), { url: 'https://wallet.example/', runScripts: 'outside-only' });
+  const w = dom.window;
+  w.localStorage.setItem('walleto.wallets', JSON.stringify([{ address: address1 }, { address: address2 }]));
+  const pending = [];
+  w.fetch = url => new Promise(resolve => pending.push({ url, resolve }));
+  w.eval(bundle); w.eval(fs.readFileSync('public/app.js', 'utf8'));
+  const $ = id => w.document.getElementById(id);
+  assert.equal(pending.length, 8);
+  assert.equal($('progress-percent').textContent, '0%');
+  for (const req of pending.filter(item => item.url.includes(address1))) req.resolve({ ok: true, json: async () => ({ assets: [zeroNative] }) });
+  await new Promise(resolve => setTimeout(resolve, 220));
+  assert.equal($('progress-percent').textContent, '50%');
+  assert.equal($('progress-bar').value, 50);
+  assert.match($('wallet-list').children[0].textContent, /✓ Scanned/);
+  assert.doesNotMatch($('wallet-list').children[1].textContent, /✓ Scanned/);
+  assert.equal($('remove-zero').disabled, true);
+  for (const req of pending.filter(item => item.url.includes(address2))) req.resolve({ ok: true, json: async () => ({ assets: [zeroNative] }) });
+  for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
+  assert.equal($('progress-percent').textContent, '100%');
+  assert.match($('remove-zero').textContent, /\(2\)/);
+  assert.equal($('remove-zero').hidden, false);
+  dom.window.close();
+});
+
+test('bulk removal skips failed, malformed, tiny, unpriced and NFT balances', async () => {
+  const dom = new JSDOM(fs.readFileSync('public/index.html', 'utf8'), { url: 'https://wallet.example/', runScripts: 'outside-only' });
+  const w = dom.window;
+  const wallets = Array.from({ length: 6 }, (_, i) => ({ address: `0x${(i + 1).toString(16).padStart(40, '0')}` }));
+  w.localStorage.setItem('walleto.wallets', JSON.stringify(wallets));
+  const requests = [];
+  w.confirm = () => true;
+  w.fetch = async url => {
+    requests.push(url);
+    const query = new URL(url, 'https://wallet.example').searchParams;
+    const index = wallets.findIndex(item => item.address === query.get('address'));
+    if (index === 3 && query.get('network') === 'base') return { ok: false };
+    if (index === 4 && query.get('network') === 'base') return { ok: true, json: async () => ({ assets: [{ ...zeroNative, rawBalance: null }] }) };
+    const assets = [zeroNative];
+    if (index === 1) assets.push({ name: 'Tiny', symbol: 'T', type: 'ERC-20', rawBalance: '1', decimals: 100, price: null });
+    if (index === 2) assets.push({ name: 'Collectible', symbol: 'NFT', type: 'ERC-721', rawBalance: '1', decimals: 0, price: null });
+    if (index === 5) assets.push({ name: 'Unpriced', symbol: 'U', type: 'ERC-20', rawBalance: '10', decimals: 0, price: null });
+    return { ok: true, json: async () => ({ assets }) };
+  };
+  w.scanDirect = async () => { throw new Error('Indexer unavailable'); };
+  w.eval(bundle); w.eval(fs.readFileSync('public/app.js', 'utf8'));
+  const $ = id => w.document.getElementById(id);
+  for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
+  assert.equal($('progress-percent').textContent, '100%');
+  assert.match($('progress-text').textContent, /errors/);
+  assert.match($('wallet-list').children[3].textContent, /Incomplete/);
+  assert.match($('wallet-list').children[4].textContent, /Incomplete/);
+  assert.match($('remove-zero').textContent, /\(1\)/);
+  const scannedRequests = requests.length;
+  $('remove-zero').click();
+  assert.deepEqual(JSON.parse(w.localStorage.getItem('walleto.wallets')).map(item => item.address), wallets.slice(1).map(item => item.address));
+  assert.equal(requests.length, scannedRequests, 'does not rescan remaining wallets');
+  assert.equal($('remove-zero').disabled, true);
+  dom.window.close();
+});
+
+test('bulk removal is cancelled when confirmation is declined', async () => {
+  const dom = new JSDOM(fs.readFileSync('public/index.html', 'utf8'), { url: 'https://wallet.example/', runScripts: 'outside-only' });
+  const w = dom.window;
+  w.localStorage.setItem('walleto.wallets', JSON.stringify([{ address: address1 }]));
+  w.confirm = () => false;
+  w.fetch = async () => ({ ok: true, json: async () => ({ assets: [zeroNative] }) });
+  w.eval(bundle); w.eval(fs.readFileSync('public/app.js', 'utf8'));
+  const $ = id => w.document.getElementById(id);
+  for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
+  $('remove-zero').click();
+  assert.equal(JSON.parse(w.localStorage.getItem('walleto.wallets')).length, 1);
+  assert.match($('remove-zero').textContent, /\(1\)/);
+  dom.window.close();
+});
+
+test('deduplicates saved addresses before scanning or bulk removal', async () => {
+  const dom = new JSDOM(fs.readFileSync('public/index.html', 'utf8'), { url: 'https://wallet.example/', runScripts: 'outside-only' });
+  const w = dom.window;
+  w.localStorage.setItem('walleto.wallets', JSON.stringify([{ address: address1 }, { address: address1.toLowerCase() }]));
+  let calls = 0;
+  w.confirm = () => true;
+  w.fetch = async () => { calls++; return { ok: true, json: async () => ({ assets: [zeroNative] }) }; };
+  w.eval(bundle); w.eval(fs.readFileSync('public/app.js', 'utf8'));
+  const $ = id => w.document.getElementById(id);
+  for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
+  assert.equal(calls, 4);
+  assert.equal($('wallet-count').textContent, '1');
+  assert.match($('remove-zero').textContent, /\(1\)/);
+  $('remove-zero').click();
+  assert.equal(JSON.parse(w.localStorage.getItem('walleto.wallets')).length, 0);
+  dom.window.close();
+});
+
+test('imports phrases across UTF-8 chunk boundaries without leaking input', { timeout: 60000 }, async () => {
+  const { dom, w, $, requests } = setup();
+  // Start the phrase near the end of a chunk and split a multi-byte label.
+  const prefix = ' '.repeat(65529);
+  const file = new w.File([`${prefix}${phrase1}\r\n${' '.repeat(65530)}ウォレット: ${phrase2}`], 'large.txt', { type: 'text/plain' });
+  Object.defineProperty($('seed-file'), 'files', { configurable: true, value: [file] });
+  submit(w, $('seed-form'));
+  for (let i = 0; i < 200 && !w.localStorage.getItem('walleto.wallets'); i++) await wait();
+  assert.deepEqual(JSON.parse(w.localStorage.getItem('walleto.wallets')).map(item => item.address), [address1, address2]);
+  assert.match($('import-status').textContent, /2 wallets added/);
+  assert.equal(requests.length, 8);
+  assert.ok(requests.every(url => !url.includes('test') && !url.includes('abandon')));
+  dom.window.close();
+});
+
+test('accepts pasted text beyond the former 256 KiB limit', { timeout: 60000 }, async () => {
+  const { dom, w, $, requests } = setup();
+  $('seed-phrases').value = `${' '.repeat(256 * 1024 + 1)}\n${phrase1}`;
+  submit(w, $('seed-form'));
+  for (let i = 0; i < 200 && !w.localStorage.getItem('walleto.wallets'); i++) await wait();
+  assert.deepEqual(JSON.parse(w.localStorage.getItem('walleto.wallets')).map(item => item.address), [address1]);
+  assert.match($('import-status').textContent, /1 wallet added/);
+  assert.equal(requests.length, 4);
+  dom.window.close();
+});
+
+test('rejects invalid UTF-8 file locally rather than importing partial results', async () => {
+  const { dom, w, $, requests } = setup();
+  const file = new w.File([phrase1, new Uint8Array([0xff])], 'bad.txt', { type: 'text/plain' });
+  Object.defineProperty($('seed-file'), 'files', { configurable: true, value: [file] });
+  submit(w, $('seed-form'));
+  for (let i = 0; i < 100 && $('seed-form').querySelector('button[type="submit"]').disabled; i++) await wait();
+  assert.match($('import-status').textContent, /Could not read or process/);
+  assert.equal(w.localStorage.getItem('walleto.wallets'), null);
+  assert.equal(requests.length, 0);
   dom.window.close();
 });
