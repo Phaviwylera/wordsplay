@@ -7,6 +7,17 @@
     arbitrum: 'https://arbitrum.blockscout.com',
     optimism: 'https://optimism.blockscout.com',
   };
+  const statsCaches = new WeakMap();
+  function cachedStats(fetcher, network, get) {
+    let cache = statsCaches.get(fetcher);
+    if (!cache) { cache = new Map(); statsCaches.set(fetcher, cache); }
+    const entry = cache.get(network);
+    if (entry && entry.expires > Date.now()) return entry.promise;
+    const fresh = { expires: Date.now() + 60000 };
+    fresh.promise = get('/stats', 4000).catch(() => { if (cache.get(network) === fresh) cache.delete(network); return null; });
+    cache.set(network, fresh);
+    return fresh.promise;
+  }
   function rawBalance(value) {
     if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) value = String(value);
     if (typeof value !== 'string' || !/^\d+$/.test(value)) throw new Error('Invalid balance from indexer');
@@ -14,13 +25,13 @@
   }
   async function scanDirect(address, network, fetcher = fetch) {
     if (!/^0x[a-fA-F0-9]{40}$/.test(address) || !Object.hasOwn(explorers, network)) throw new Error('Invalid wallet or network');
-    async function get(path) {
-      const response = await fetcher(`${explorers[network]}/api/v2${path}`, { signal: AbortSignal.timeout(15000), headers: { Accept: 'application/json' } });
-      if (!response.ok) throw new Error(`Indexer returned ${response.status}`);
+    async function get(path, timeout = 15000) {
+      const response = await fetcher(`${explorers[network]}/api/v2${path}`, { signal: AbortSignal.timeout(timeout), headers: { Accept: 'application/json' } });
+      if (!response.ok) throw Object.assign(new Error(`Indexer returned ${response.status}`), { status: response.status });
       return response.json();
     }
     const [account, tokens, stats] = await Promise.all([
-      get(`/addresses/${address}`), get(`/addresses/${address}/token-balances`), get('/stats').catch(() => null),
+      get(`/addresses/${address}`), get(`/addresses/${address}/token-balances`), cachedStats(fetcher, network, get),
     ]);
     if (!Array.isArray(tokens)) throw new Error('Unexpected indexer response');
     const assets = [{ name: 'Ether', symbol: 'ETH', type: 'native', rawBalance: rawBalance(account?.coin_balance), decimals: 18, price: stats?.coin_price ?? null }];

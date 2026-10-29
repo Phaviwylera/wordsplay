@@ -25,6 +25,7 @@ const PAGE_SIZE = 100;
 const SCAN_CONCURRENCY = 8;
 let walletStates = new Map();
 let zeroWallets = new Set();
+let failedChecks = new Map();
 let scanVersion = 0;
 let loading = false;
 let scanController = null;
@@ -99,19 +100,32 @@ function render() {
   }
   const status = $('#scan-status');
   status.hidden = !wallets.length || (!failed && !pending);
-  status.textContent = pending ? `Scanning ${pending} wallet network${pending === 1 ? '' : 's'}…` : `${failed} wallet network${failed === 1 ? '' : 's'} could not be scanned. Results may be incomplete. Use refresh to try again.`;
+  status.textContent = pending ? `Scanning ${pending} wallet network${pending === 1 ? '' : 's'}…` : `${failed} wallet network${failed === 1 ? '' : 's'} could not be scanned. Results are incomplete; retry the failed checks.`;
   const percentage = total ? Math.floor(completed * 100 / total) : 0;
   $('#scan-progress').hidden = !wallets.length;
   $('#progress-bar').value = percentage;
   $('#progress-percent').textContent = `${percentage}%`;
   $('#progress-text').textContent = pending ? 'Scanning balances…' : failed ? 'Scan finished with errors' : 'Scan complete';
-  $('#progress-detail').textContent = `${completed} of ${total} network checks finished${failed ? ` · ${failed} failed` : ''}. A completed check may have failed.`;
+  $('#progress-detail').textContent = `${completed} of ${total} network checks finished${failed ? ` · ${failed} failed` : ''}.`;
+  const errorDetails = $('#scan-errors');
+  errorDetails.hidden = loading || !failedChecks.size;
+  if (!errorDetails.hidden) {
+    const counts = {};
+    const reasons = new Set();
+    for (const check of failedChecks.values()) { counts[check.network] = (counts[check.network] || 0) + 1; reasons.add(check.reason); }
+    const byNetwork = Object.entries(counts).map(([network, count]) => `${networks[network].name}: ${count}`).join(' · ');
+    const explanations = { limited: 'Rate limiting detected', invalid: 'Invalid or incomplete indexer data', unavailable: 'Indexer or network unavailable' };
+    errorDetails.textContent = `${byNetwork}. ${[...reasons].map(reason => explanations[reason]).join('; ')}. Failed checks are not treated as zero.`;
+  }
+  $('#retry-failed').hidden = loading || !failedChecks.size;
   const eligible = zeroWallets.size;
   $('#remove-zero').hidden = !wallets.length;
   $('#remove-zero').disabled = loading || eligible === 0;
   $('#zero-help').hidden = !wallets.length;
   $('#zero-help').textContent = loading ? 'Available after all checks finish. Failed scans are never treated as zero.' : 'Only wallets with successful scans on all four supported networks and no indexed assets are eligible. Failed scans are excluded.';
   $('#remove-zero').textContent = `Remove zero-balance wallets (${eligible})`;
+  $('#remove-all').hidden = !wallets.length;
+  $('#remove-all').textContent = `Remove all wallets (${wallets.length})`;
   $('#refresh').classList.toggle('spinning', loading);
   $('#refresh').disabled = loading || !wallets.length;
 }
@@ -127,46 +141,92 @@ function recordWalletScan(wallet, hasAssets, failed, totalNetworks) {
 async function scanRequest(url, options, signal, timeout) {
   const controller = new AbortController();
   const cancel = () => controller.abort();
-  if (signal.aborted) controller.abort();
-  else signal.addEventListener('abort', cancel, { once: true });
+  if (signal.aborted || options.signal?.aborted) controller.abort();
+  else {
+    signal.addEventListener('abort', cancel, { once: true });
+    options.signal?.addEventListener('abort', cancel, { once: true });
+  }
   const timer = setTimeout(cancel, timeout);
   try { return await fetch(url, { ...options, signal: controller.signal }); }
-  finally { clearTimeout(timer); signal.removeEventListener('abort', cancel); }
+  finally { clearTimeout(timer); signal.removeEventListener('abort', cancel); options.signal?.removeEventListener('abort', cancel); }
 }
 function scheduleRender() {
   if (renderTimer !== null) return;
   renderTimer = setTimeout(() => { renderTimer = null; render(); }, wallets.length > 1000 ? 1000 : 150);
 }
-async function scan() {
+function failureReason(error) {
+  if (error?.status === 429 || error?.serverStatus === 429) return 'limited';
+  if (/invalid|unexpected/i.test(error?.message || '')) return 'invalid';
+  return 'unavailable';
+}
+function transientFailure(error) {
+  return [429, 500, 502, 503, 504].includes(error?.status) || [429, 500, 502, 503, 504].includes(error?.serverStatus) || ['TypeError', 'AbortError', 'TimeoutError'].includes(error?.name);
+}
+function retryDelay(signal) {
+  return new Promise(resolve => {
+    if (signal.aborted) return resolve();
+    const done = () => { clearTimeout(timer); signal.removeEventListener('abort', done); resolve(); };
+    const timer = setTimeout(done, 700 + Math.random() * 300);
+    signal.addEventListener('abort', done, { once: true });
+  });
+}
+async function scan(retryFailed = false) {
+  const retry = retryFailed === true;
+  if (retry && (loading || !failedChecks.size)) return;
   if (scanController) scanController.abort();
   scanController = new AbortController();
   const signal = scanController.signal;
+  const directFetcher = (url, options) => scanRequest(url, options, signal, 15000);
   const version = ++scanVersion;
   const scanWallets = wallets.slice();
   const networkKeys = Object.keys(networks);
-  scanData = { total: scanWallets.length * networkKeys.length, completed: 0, failed: 0, assets: [], knownValue: 0, unpriced: 0 };
-  walletStates = new Map(); zeroWallets = new Set();
-  loading = scanData.total > 0; render();
+  let retryTasks = null;
+  if (retry) {
+    retryTasks = [...failedChecks.values()];
+    scanData.completed -= retryTasks.length;
+    scanData.failed -= retryTasks.length;
+    for (const { wallet } of retryTasks) {
+      const state = walletStates.get(wallet.address.toLowerCase());
+      if (state) { state.done--; state.failed--; }
+    }
+    failedChecks.clear();
+  } else {
+    scanData = { total: scanWallets.length * networkKeys.length, completed: 0, failed: 0, assets: [], knownValue: 0, unpriced: 0 };
+    walletStates = new Map(); zeroWallets = new Set(); failedChecks = new Map();
+  }
+  const taskCount = retry ? retryTasks.length : scanData.total;
+  loading = taskCount > 0; render();
   let next = 0;
   async function worker() {
-    while (!signal.aborted && next < scanData.total) {
+    while (!signal.aborted && next < taskCount) {
       const task = next++;
-      const wallet = scanWallets[Math.floor(task / networkKeys.length)];
-      const network = networkKeys[task % networkKeys.length];
+      const wallet = retry ? retryTasks[task].wallet : scanWallets[Math.floor(task / networkKeys.length)];
+      const network = retry ? retryTasks[task].network : networkKeys[task % networkKeys.length];
       const address = wallet.address;
       try {
         let data;
-        try {
-          const response = await scanRequest(`/api/scan?address=${encodeURIComponent(address)}&network=${encodeURIComponent(network)}`, {}, signal, 17000);
-          if (!response.ok) throw new Error('Server scan failed');
-          data = await response.json();
-          if (!Array.isArray(data.assets)) throw new Error('Invalid response');
-        } catch (error) {
-          if (signal.aborted) return;
-          data = await scanDirect(address, network, (url, options) => scanRequest(url, options, signal, 15000));
+        for (let attempt = 0; ; attempt++) {
+          try {
+            try {
+              const response = await scanRequest(`/api/scan?address=${encodeURIComponent(address)}&network=${encodeURIComponent(network)}`, {}, signal, 17000);
+              if (!response.ok) throw Object.assign(new Error('Server scan failed'), { status: response.status });
+              data = await response.json();
+              if (!Array.isArray(data.assets)) throw new Error('Invalid response');
+            } catch (serverError) {
+              if (signal.aborted) return;
+              try { data = await scanDirect(address, network, directFetcher); }
+              catch (error) { if (error && typeof error === 'object') error.serverStatus = serverError.status; throw error; }
+            }
+            if (!Array.isArray(data.assets) || !data.assets.some(asset => asset && asset.type === 'native') || data.assets.some(asset => !asset || typeof asset.rawBalance !== 'string' || !/^\d+$/.test(asset.rawBalance))) throw new Error('Invalid balances');
+            break;
+          } catch (error) {
+            if (signal.aborted) return;
+            if (attempt >= 1 || !transientFailure(error)) throw error;
+            await retryDelay(signal);
+            if (signal.aborted) return;
+          }
         }
         if (version === scanVersion && !signal.aborted) {
-          if (!Array.isArray(data.assets) || !data.assets.some(asset => asset && asset.type === 'native') || data.assets.some(asset => !asset || typeof asset.rawBalance !== 'string' || !/^\d+$/.test(asset.rawBalance))) throw new Error('Invalid balances');
           const hasAssets = data.assets.some(asset => BigInt(asset.rawBalance) > 0n);
           for (const asset of data.assets) {
             const balance = amount(asset.rawBalance, asset.decimals);
@@ -179,13 +239,17 @@ async function scan() {
           scanData.completed++;
           recordWalletScan(wallet, hasAssets, false, networkKeys.length);
         }
-      } catch (_) {
-        if (version === scanVersion && !signal.aborted) { scanData.failed++; scanData.completed++; recordWalletScan(wallet, false, true, networkKeys.length); }
+      } catch (error) {
+        if (version === scanVersion && !signal.aborted) {
+          scanData.failed++; scanData.completed++;
+          failedChecks.set(`${address.toLowerCase()}:${network}`, { wallet, network, reason: failureReason(error) });
+          recordWalletScan(wallet, false, true, networkKeys.length);
+        }
       }
       if (version === scanVersion && !signal.aborted) scheduleRender();
     }
   }
-  await Promise.all(Array.from({ length: Math.min(SCAN_CONCURRENCY, scanData.total) }, worker));
+  await Promise.all(Array.from({ length: Math.min(SCAN_CONCURRENCY, taskCount) }, worker));
   if (version === scanVersion) {
     if (renderTimer !== null) { clearTimeout(renderTimer); renderTimer = null; }
     loading = false; render();
@@ -250,6 +314,15 @@ $('#wallet-list').addEventListener('click', event => {
   const saved = persist(); scan();
   if (!saved) importStatus('The removal could not be saved in browser storage.', true);
 });
+$('#remove-all').addEventListener('click', () => {
+  const count = wallets.length;
+  if (!count || !confirm(`Remove all ${count} wallet${count === 1 ? '' : 's'} from the watch list? Any ongoing balance scan will stop. This does not delete your wallets or funds.`)) return;
+  wallets = [];
+  walletPage = 0; assetPage = 0;
+  const saved = persist();
+  scan(); // Abort in-flight requests and invalidate any late results.
+  importStatus(saved ? `Removed all ${count} wallet${count === 1 ? '' : 's'} from the watch list.` : `Removed all ${count} wallet${count === 1 ? '' : 's'} for this session, but browser storage could not save the change; wallets may return after a reload.`, !saved);
+});
 $('#remove-zero').addEventListener('click', () => {
   if (loading || !zeroWallets.size) return;
   const count = zeroWallets.size;
@@ -267,6 +340,7 @@ $('#wallet-prev').addEventListener('click', () => { walletPage--; render(); });
 $('#wallet-next').addEventListener('click', () => { walletPage++; render(); });
 $('#asset-prev').addEventListener('click', () => { assetPage--; render(); });
 $('#asset-next').addEventListener('click', () => { assetPage++; render(); });
-$('#refresh').addEventListener('click', scan);
+$('#refresh').addEventListener('click', () => scan());
+$('#retry-failed').addEventListener('click', () => scan(true));
 $('#today').textContent = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date());
 scan();

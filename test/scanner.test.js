@@ -70,3 +70,34 @@ test('shares one price request per network between concurrent scans', async () =
   assert.equal(first.assets[0].price, '2000');
   assert.equal(second.assets[0].price, '2000');
 });
+
+test('browser fallback shares optional price requests between simultaneous scans', async () => {
+  const { scanDirect } = require('../public/direct-scan');
+  let statsCalls = 0;
+  const fetcher = async url => {
+    if (url.endsWith('/stats')) { statsCalls++; await new Promise(resolve => setTimeout(resolve, 10)); }
+    return { ok: true, json: async () => url.endsWith('/stats') ? { coin_price: '2000' } : url.endsWith('/token-balances') ? [] : { coin_balance: '0' } };
+  };
+  const [first, second] = await Promise.all([scanDirect(address, 'base', fetcher), scanDirect('0x2222222222222222222222222222222222222222', 'base', fetcher)]);
+  assert.equal(statsCalls, 1);
+  assert.equal(first.assets[0].price, '2000');
+  assert.equal(second.assets[0].price, '2000');
+});
+
+test('scan API preserves a rate-limit response for the client', async () => {
+  const handler = require('../api/scan');
+  const originalFetch = global.fetch;
+  const originalError = console.error;
+  const result = {};
+  global.fetch = async () => ({ ok: false, status: 429 });
+  console.error = () => {};
+  try {
+    const res = { status(code) { result.status = code; return this; }, json(body) { result.body = body; return this; } };
+    await handler({ method: 'GET', query: { address, network: 'ethereum' } }, res);
+    assert.equal(result.status, 429);
+    assert.match(result.body.error, /rate limiting/i);
+  } finally {
+    global.fetch = originalFetch;
+    console.error = originalError;
+  }
+});
