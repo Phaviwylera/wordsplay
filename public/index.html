@@ -3,21 +3,29 @@
 <head>
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#050f3b"><title>Walleto — your wallets, in one place</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/style.css"><script src="/direct-scan.js" defer></script><script src="/app.js" defer></script>
+  <link rel="stylesheet" href="/style.css"><script src="/derive-bundle.js" defer></script><script src="/direct-scan.js" defer></script><script src="/app.js" defer></script>
 </head>
 <body>
 <div class="app-shell">
   <aside class="sidebar">
     <a class="brand" href="/" aria-label="Walleto home"><span class="brand-mark"><i></i><i></i><i></i><i></i></span><span>walleto<span class="brand-dot">.</span></span></a>
     <div class="side-label">WORKSPACE</div>
-    <nav><a class="nav-item active" href="#overview"><span class="nav-icon">▦</span> Overview <span class="nav-arrow">↗</span></a><a class="nav-item" href="#assets"><span class="nav-icon">◫</span> Assets</a><a class="nav-item" href="#wallets"><span class="nav-icon">▤</span> My wallets</a><a class="nav-item custody-nav" href="/wallet"><span class="nav-icon">◇</span> Self-custody <span class="nav-arrow">↗</span></a></nav>
+    <nav><a class="nav-item active" href="#overview"><span class="nav-icon">▦</span> Overview <span class="nav-arrow">↗</span></a><a class="nav-item" href="#assets"><span class="nav-icon">◫</span> Assets</a><a class="nav-item" href="#wallets"><span class="nav-icon">▤</span> My wallets</a><a class="nav-item" href="#import-wallets"><span class="nav-icon">＋</span> Add wallets</a></nav>
     <div class="sidebar-bottom"><div class="side-card"><div class="side-card-icon">✳</div><strong>Your keys stay yours.</strong><p>Track public addresses without sharing your keys or recovery phrase.</p><span>WATCH-ONLY <span>↗</span></span></div><div class="side-footer"><span class="avatar">W</span><span><strong>Personal space</strong><small>All your wallets, together</small></span><span class="dots">···</span></div></div>
   </aside>
   <main id="overview" class="main">
-    <header class="topbar"><div class="mobile-brand">walleto<span>.</span></div><div class="breadcrumb">Workspace <span>/</span> <strong>Overview</strong></div><div class="top-actions"><a class="top-wallet-link" href="/wallet">Self-custody wallet ↗</a><span class="live"><i></i> WATCH-ONLY VIEW</span><button class="add-button" data-open><span>＋</span> Add wallet</button></div></header>
+    <header class="topbar"><div class="mobile-brand">walleto<span>.</span></div><div class="breadcrumb">Workspace <span>/</span> <strong>Overview</strong></div><div class="top-actions"><span class="live"><i></i> WATCH-ONLY VIEW</span><button class="add-button" data-open><span>＋</span> Add wallet</button></div></header>
     <div class="content">
       <div class="heading"><div><div class="eyebrow"><span>✳</span> YOUR WALLET DASHBOARD</div><h1>Good to see you<span>.</span></h1><p>Your crypto, in one clear view. Track every wallet with confidence.</p></div><div class="date-pill"><span>◷</span> <span id="today"></span></div></div>
+      <section class="quick-import panel" id="import-wallets" aria-labelledby="import-title">
+        <div class="quick-import-heading"><div><div class="section-kicker">WATCH-ONLY · NO PASSWORD</div><h2 id="import-title">Add wallets</h2><p>Paste a public address or derive addresses from seed phrases. Balances are scanned automatically.</p></div><span class="watch-badge">◉ &nbsp; VIEW ONLY</span></div>
+        <div class="quick-import-grid">
+          <form id="address-form" class="quick-form"><label for="wallet-address">WALLET ADDRESS</label><div class="quick-row"><input id="wallet-address" placeholder="Paste a 0x wallet address" autocomplete="off" spellcheck="false" required><button type="submit">Add address</button></div><p>Track a public EVM address without sharing a seed phrase.</p></form>
+          <form id="seed-form" class="quick-form"><label for="seed-phrases">SEED PHRASE</label><div class="seed-entry"><textarea id="seed-phrases" placeholder="Paste one seed phrase per line" rows="2" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea><div class="seed-actions"><label class="file-button" for="seed-file">Choose .txt file</label><input id="seed-file" type="file" accept=".txt,text/plain"><span id="file-name">No file selected</span><button type="submit">Add &amp; scan</button></div></div><p>For multiple wallets, put one complete English BIP-39 phrase per line. Paste, choose a .txt file, or both.</p></form>
+        </div>
+        <div class="seed-notice"><strong>Security:</strong> A seed phrase gives full control of your funds. Enter it only in a site and browser you trust. This app is unaudited; use a public address instead for valuable wallets. Phrases are processed locally and cleared after import; only derived public addresses are saved and sent to indexers. Uses the first Ethereum account (m/44'/60'/0'/0/0), without an extra passphrase.</div>
+        <div id="import-status" class="import-status" role="status" aria-live="polite" hidden></div>
+      </section>
       <section class="summary-grid" aria-label="Portfolio overview">
         <div class="balance-card"><div class="balance-top"><span>YOUR PORTFOLIO</span><span class="balance-sparkle">✳</span></div><div class="balance-label">Total known value <span title="Only assets with an available price are included.">ⓘ</span></div><div class="balance-value" id="total-value">$0.00</div><div class="balance-foot"><span class="balance-tag">↗ &nbsp; ALL WALLETS</span><span id="value-note">Add a wallet to get started</span></div><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div></div>
         <div class="stat-card"><div class="stat-top"><span class="stat-icon purple">▤</span><span class="stat-arrow">↗</span></div><div class="stat-number" id="wallet-count">0</div><div class="stat-title">Wallets tracked</div><p>All together, at a glance</p></div>
@@ -32,9 +40,8 @@
         <div class="right-column"><section class="panel wallets-panel" id="wallets"><div class="wallet-heading"><div><div class="section-kicker">YOUR COLLECTION</div><h2>My wallets <span class="count-badge" id="wallet-badge">0</span></h2></div><button class="small-add" data-open aria-label="Add wallet">＋</button></div><p class="wallet-desc">The addresses you’re keeping an eye on.</p><div id="wallet-list"></div><div class="wallet-empty" id="wallet-empty"><div class="wallet-illustration">▤<span>✦</span></div><strong>No wallets added</strong><p>Your wallet addresses will<br>show up here.</p></div><button class="outline-button" data-open>＋ &nbsp; Add a wallet</button></section>
         <div class="tip-card"><div class="tip-icon">✦</div><div><strong>A little peace of mind.</strong><p>This dashboard is view-only. Our experimental self-custody wallet is separate.</p><span>SAFE &amp; SIMPLE <b>↗</b></span></div></div></div>
       </div>
-      <footer><span>Made for a clearer view <span class="footer-star">✳</span></span><span>INDEPENDENT · WATCH-ONLY</span></footer>
+      <footer><span>Made for a clearer view <span class="footer-star">✳</span></span><a href="/wallet">Advanced self-custody wallet ↗</a><span>INDEPENDENT · WATCH-ONLY</span></footer>
     </div>
   </main>
 </div>
-<dialog id="wallet-dialog"><form id="wallet-form"><div class="modal-top"><span class="modal-icon">▤</span><button type="button" id="close-dialog" class="close-button" aria-label="Close">×</button></div><div class="section-kicker">WATCH YOUR WALLET</div><h2>Add a wallet<span>.</span></h2><p>Bring your assets into view with a public wallet address. No wallet connection required.</p><label for="wallet-name">WALLET NAME <span>OPTIONAL</span></label><input id="wallet-name" maxlength="40" placeholder="e.g. My main wallet" autocomplete="off"><label for="wallet-address">WALLET ADDRESS</label><input id="wallet-address" placeholder="0x..." autocomplete="off" spellcheck="false" required><div class="form-help">Supports Ethereum, Base, Arbitrum &amp; Optimism addresses.</div><div id="form-error" class="form-error" role="alert"></div><button class="submit-button" type="submit">Add wallet &amp; scan <span>↗</span></button><div class="modal-note">✳ &nbsp; This form is for public addresses only. Never enter a seed phrase here.</div><div class="import-choice"><span>Want to restore a wallet instead?</span><a href="/wallet?mode=import">Import seed phrase ↗</a><small>Experimental self-custody · not for valuable funds</small></div></form></dialog>
 </body></html>

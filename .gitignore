@@ -1,4 +1,5 @@
 node_modules/
 public/wallet-bundle.js
+public/derive-bundle.js
 .env
 .env.*
