@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#f7f8f6"><title>Walleto — your wallets, in one place</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css"><script src="/direct-scan.js" defer></script><script src="/app.js" defer></script>
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="Walleto home"><span class="brand-mark"><i></i><i></i><i></i><i></i></span><span>walleto<span class="brand-dot">.</span></span></a>
+    <div class="side-label">WORKSPACE</div>
+    <nav><a class="nav-item active" href="#overview"><span class="nav-icon">▦</span> Overview <span class="nav-arrow">↗</span></a><a class="nav-item" href="#assets"><span class="nav-icon">◫</span> Assets</a><a class="nav-item" href="#wallets"><span class="nav-icon">▤</span> My wallets</a></nav>
+    <div class="sidebar-bottom"><div class="side-card"><div class="side-card-icon">✳</div><strong>Your keys stay yours.</strong><p>Just a clearer view of what you own. No keys, no connection, no funny business.</p><span>WATCH-ONLY <span>↗</span></span></div><div class="side-footer"><span class="avatar">W</span><span><strong>Personal space</strong><small>All your wallets, together</small></span><span class="dots">···</span></div></div>
+  </aside>
+  <main id="overview" class="main">
+    <header class="topbar"><div class="breadcrumb">Workspace <span>/</span> <strong>Overview</strong></div><div class="top-actions"><span class="live"><i></i> WATCH-ONLY</span><button class="add-button" data-open><span>＋</span> Add wallet</button></div></header>
+    <div class="content">
+      <div class="heading"><div><div class="eyebrow"><span>✳</span> YOUR WALLET DASHBOARD</div><h1>Good to see you<span>.</span></h1><p>A little clarity for your crypto. All your wallets, one view.</p></div><div class="date-pill"><span>◷</span> <span id="today"></span></div></div>
+      <section class="summary-grid" aria-label="Portfolio overview">
+        <div class="balance-card"><div class="balance-top"><span>YOUR PORTFOLIO</span><span class="balance-sparkle">✳</span></div><div class="balance-label">Total known value <span title="Only assets with an available price are included.">ⓘ</span></div><div class="balance-value" id="total-value">$0.00</div><div class="balance-foot"><span class="balance-tag">↗ &nbsp; ALL WALLETS</span><span id="value-note">Add a wallet to get started</span></div><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div></div>
+        <div class="stat-card"><div class="stat-top"><span class="stat-icon purple">▤</span><span class="stat-arrow">↗</span></div><div class="stat-number" id="wallet-count">0</div><div class="stat-title">Wallets tracked</div><p>All together, at a glance</p></div>
+        <div class="stat-card"><div class="stat-top"><span class="stat-icon peach">◇</span><span class="stat-arrow">↗</span></div><div class="stat-number" id="asset-count">0</div><div class="stat-title">Assets found</div><p>Across supported networks</p></div>
+      </section>
+      <div class="dashboard-grid">
+        <section class="panel assets-panel" id="assets"><div class="panel-header"><div><div class="section-kicker">THE BIG PICTURE</div><h2>Your assets <span class="count-badge" id="asset-badge">0</span></h2><p>Everything you hold, all in one place.</p></div><div class="asset-actions"><label class="sr-only" for="network-filter">Filter by network</label><select id="network-filter"><option value="all">All networks</option><option value="ethereum">Ethereum</option><option value="base">Base</option><option value="arbitrum">Arbitrum</option><option value="optimism">Optimism</option></select><button class="icon-button" id="refresh" title="Refresh balances" aria-label="Refresh balances">↻</button></div></div>
+          <div id="scan-status" class="scan-status" role="status" hidden></div><div class="table-wrap"><table><thead><tr><th>ASSET</th><th>NETWORK</th><th>BALANCE</th><th>VALUE</th></tr></thead><tbody id="asset-list"></tbody></table></div>
+          <div class="empty-state" id="empty-state"><div class="empty-art"><span>✦</span><div>◈</div><span>✳</span></div><h3>Nothing here just yet.</h3><p>Add a wallet address and we’ll bring your<br>assets together right here.</p><button class="empty-button" data-open>＋ &nbsp; Add your first wallet</button></div>
+          <div class="panel-foot"><span><i></i> LIVE ON-CHAIN DATA</span><span>Powered by Blockscout ↗</span></div>
+        </section>
+        <div class="right-column"><section class="panel wallets-panel" id="wallets"><div class="wallet-heading"><div><div class="section-kicker">YOUR COLLECTION</div><h2>My wallets <span class="count-badge" id="wallet-badge">0</span></h2></div><button class="small-add" data-open aria-label="Add wallet">＋</button></div><p class="wallet-desc">The addresses you’re keeping an eye on.</p><div id="wallet-list"></div><div class="wallet-empty" id="wallet-empty"><div class="wallet-illustration">▤<span>✦</span></div><strong>No wallets added</strong><p>Your wallet addresses will<br>show up here.</p></div><button class="outline-button" data-open>＋ &nbsp; Add a wallet</button></section>
+        <div class="tip-card"><div class="tip-icon">✦</div><div><strong>A little peace of mind.</strong><p>Walleto is view-only. Your assets stay right where they are.</p><span>SAFE &amp; SIMPLE <b>↗</b></span></div></div></div>
+      </div>
+      <footer><span>Made for a clearer view <span class="footer-star">✳</span></span><span>YOUR CRYPTO, SIMPLIFIED.</span></footer>
+    </div>
+  </main>
+</div>
+<dialog id="wallet-dialog"><form id="wallet-form"><div class="modal-top"><span class="modal-icon">▤</span><button type="button" id="close-dialog" class="close-button" aria-label="Close">×</button></div><div class="section-kicker">WATCH YOUR WALLET</div><h2>Add a wallet<span>.</span></h2><p>Bring your assets into view with a public wallet address. No wallet connection required.</p><label for="wallet-name">WALLET NAME <span>OPTIONAL</span></label><input id="wallet-name" maxlength="40" placeholder="e.g. My main wallet" autocomplete="off"><label for="wallet-address">WALLET ADDRESS</label><input id="wallet-address" placeholder="0x..." autocomplete="off" spellcheck="false" required><div class="form-help">Supports Ethereum, Base, Arbitrum &amp; Optimism addresses.</div><div id="form-error" class="form-error" role="alert"></div><button class="submit-button" type="submit">Add wallet &amp; scan <span>↗</span></button><div class="modal-note">✳ &nbsp; Public addresses only. Never share your private key or recovery phrase.</div></form></dialog>
+</body></html>
