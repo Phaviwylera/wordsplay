@@ -1,0 +1,10 @@
+[Unit]
+Description=Deploy latest Walleto main branch
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/walleto/source/deploy/ec2/update.sh
+TimeoutStartSec=30min

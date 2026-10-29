@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Walleto main for updates
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=1min
+AccuracySec=10s
+Unit=walleto-deploy.service
+
+[Install]
+WantedBy=timers.target
