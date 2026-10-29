@@ -25,6 +25,10 @@ Only the first Ethereum account (`m/44'/60'/0'/0/0`, empty BIP-39 passphrase) is
 
 Balances and optional USD prices come from public Blockscout indexers. Discovery is limited to the four supported networks and the assets indexed by those services; it cannot guarantee every asset on every chain. NFTs are shown as quantities rather than valued. The portfolio total includes only assets with available prices and may be incomplete; failed network scans are reported in the dashboard. Token data and prices can be stale or unavailable. The dashboard is watch-only and is not financial advice.
 
+## Deploy to EC2 with automatic updates
+
+For an Ubuntu EC2 instance that automatically checks and deploys the latest merged `main` commit, see [the EC2 setup guide](deploy/ec2/README.md). The deployment files must be merged into `main` and configured on your instance first. No domain is required for private access through an SSH tunnel.
+
 ## Deploy to AWS App Runner
 
 The included Dockerfile packages the app and its API together for App Runner. Deployment requires an AWS account, permissions to use ECR and App Runner, Docker, and the AWS CLI configured locally. AWS resources may incur charges. This project has not been deployed automatically.

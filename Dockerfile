@@ -1,9 +1,14 @@
 FROM node:22-alpine AS build
+RUN apk add --no-cache bash util-linux
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY src ./src
-RUN mkdir public && npm run build
+COPY lib ./lib
+COPY public ./public
+COPY test ./test
+COPY deploy ./deploy
+RUN npm test && npm run build
 
 FROM node:22-alpine
 ENV NODE_ENV=production
