@@ -51,3 +51,31 @@ test('signs an offline native transfer with the expected chain, recipient and va
   assert.equal(tx.to, '0x0000000000000000000000000000000000000001');
   assert.equal(tx.value, parseEther('0.001'));
 });
+
+test('import link opens seed phrase form and rejects an invalid phrase without saving', () => {
+  const bundle = esbuild.buildSync({ entryPoints: ['src/wallet.js'], bundle: true, platform: 'browser', format: 'iife', write: false }).outputFiles[0].text;
+  const dom = new JSDOM(fs.readFileSync('public/wallet.html', 'utf8'), { url: 'https://wallet.example/wallet?mode=import', runScripts: 'outside-only' });
+  const { window } = dom;
+  window.eval(bundle);
+  const $ = id => window.document.getElementById(id);
+  assert.equal($('import-block').hidden, false);
+  $('phrase').value = 'not a valid seed phrase';
+  $('new-password').value = $('confirm-password').value = 'very-strong-test-password';
+  $('save-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  assert.match($('message').textContent, /Invalid seed phrase/);
+  assert.equal(window.localStorage.getItem('walleto.encrypted-wallet.v1'), null);
+  dom.window.close();
+});
+
+test('import link does not overwrite an existing encrypted wallet', () => {
+  const bundle = esbuild.buildSync({ entryPoints: ['src/wallet.js'], bundle: true, platform: 'browser', format: 'iife', write: false }).outputFiles[0].text;
+  const dom = new JSDOM(fs.readFileSync('public/wallet.html', 'utf8'), { url: 'https://wallet.example/wallet?mode=import', runScripts: 'outside-only' });
+  const { window } = dom;
+  window.localStorage.setItem('walleto.encrypted-wallet.v1', 'existing encrypted data');
+  window.eval(bundle);
+  assert.equal(window.document.getElementById('locked').hidden, false);
+  assert.equal(window.document.getElementById('import-block').hidden, true);
+  assert.match(window.document.getElementById('message').textContent, /already saved/);
+  assert.equal(window.localStorage.getItem('walleto.encrypted-wallet.v1'), 'existing encrypted data');
+  dom.window.close();
+});
