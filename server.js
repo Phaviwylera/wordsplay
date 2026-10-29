@@ -1,0 +1,19 @@
+const http = require('node:http');
+const fs = require('node:fs');
+const path = require('node:path');
+const handler = require('./api/scan');
+const publicDir = path.join(__dirname, 'public');
+http.createServer(async (req, res) => {
+  const url = new URL(req.url, 'http://localhost');
+  if (url.pathname === '/api/scan') {
+    req.query = Object.fromEntries(url.searchParams);
+    res.status = (code) => { res.statusCode = code; return res; };
+    res.json = (data) => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(data)); };
+    return handler(req, res);
+  }
+  const files = { '/': ['index.html', 'text/html'], '/style.css': ['style.css', 'text/css'], '/app.js': ['app.js', 'text/javascript'], '/direct-scan.js': ['direct-scan.js', 'text/javascript'] };
+  const file = files[url.pathname];
+  if (!file) { res.writeHead(404); return res.end('Not found'); }
+  res.writeHead(200, { 'Content-Type': `${file[1]}; charset=utf-8` });
+  fs.createReadStream(path.join(publicDir, file[0])).pipe(res);
+}).listen(process.env.PORT || 3000, '0.0.0.0', () => console.log(`Wallet viewer running on port ${process.env.PORT || 3000}`));
