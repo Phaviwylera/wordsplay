@@ -67,3 +67,20 @@ test('address input validates, avoids duplicates and uses the address as the lab
   assert.equal(requests.length, 4);
   dom.window.close();
 });
+
+test('imports a plain two-line text file with one 12-word phrase per line', async () => {
+  const { dom, w, $, requests } = setup();
+  // These are public test mnemonics, not user-supplied phrases.
+  const file = new w.File([`${phrase1}\r\n${phrase2}\r\n`], 'wallets.txt', { type: 'text/plain' });
+  Object.defineProperty($('seed-file'), 'files', { configurable: true, value: [file] });
+  submit(w, $('seed-form'));
+  for (let i = 0; i < 40 && !w.localStorage.getItem('walleto.wallets'); i++) await wait();
+  const stored = w.localStorage.getItem('walleto.wallets');
+  assert.deepEqual(JSON.parse(stored).map(item => item.address), [address1, address2]);
+  assert.match($('import-status').textContent, /2 wallets added/);
+  assert.equal(requests.length, 8);
+  assert.equal(stored.includes(phrase1), false);
+  assert.equal(stored.includes(phrase2), false);
+  assert.ok(requests.every(url => !url.includes('test') && !url.includes('abandon')));
+  dom.window.close();
+});
