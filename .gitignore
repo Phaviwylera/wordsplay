@@ -1,0 +1,4 @@
+node_modules/
+public/wallet-bundle.js
+.env
+.env.*

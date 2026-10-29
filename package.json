@@ -2,6 +2,19 @@
   "name": "folio-wallet-viewer",
   "version": "1.0.0",
   "private": true,
-  "scripts": { "start": "node server.js", "test": "node --test" },
-  "engines": { "node": ">=18" }
+  "scripts": {
+    "start": "npm run build && node server.js",
+    "test": "node --test",
+    "build": "esbuild src/wallet.js --bundle --platform=browser --format=iife --outfile=public/wallet-bundle.js --minify"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ethers": "^6.17.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "jsdom": "^30.1.3"
+  }
 }
