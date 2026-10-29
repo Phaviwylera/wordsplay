@@ -8,15 +8,24 @@ const shortAddress = (address) => `${address.slice(0, 6)}...${address.slice(-4)}
 let wallets = [];
 try {
   const saved = JSON.parse(localStorage.getItem('walleto.wallets') || '[]');
-  if (Array.isArray(saved)) wallets = saved.filter(w => typeof w.address === 'string' && /^0x[a-fA-F0-9]{40}$/.test(w.address)).map(w => ({ address: w.address, name: typeof w.name === 'string' ? w.name.slice(0, 40) : '' }));
+  if (Array.isArray(saved)) wallets = saved.filter(w => typeof w.address === 'string' && /^0x[a-fA-F0-9]{40}$/.test(w.address)).map(w => ({ address: w.address }));
 } catch (_) { /* Storage may be unavailable. */ }
 let results = {};
 let scanVersion = 0;
 let loading = false;
-const dialog = $('#wallet-dialog');
-const form = $('#wallet-form');
 const key = (address, network) => `${address.toLowerCase()}:${network}`;
-function persist() { try { localStorage.setItem('walleto.wallets', JSON.stringify(wallets)); } catch (_) { $('#form-error').textContent = 'Your browser could not save this wallet. It will only be available for this session.'; } }
+function persist() { try { localStorage.setItem('walleto.wallets', JSON.stringify(wallets)); return true; } catch (_) { return false; } }
+function importStatus(text, error = false) { const el = $('#import-status'); el.textContent = text; el.hidden = false; el.classList.toggle('error', error); }
+function addAddresses(addresses) {
+  let added = 0; let duplicates = 0;
+  for (const address of addresses) {
+    if (wallets.some(wallet => wallet.address.toLowerCase() === address.toLowerCase())) { duplicates++; continue; }
+    wallets.push({ address }); added++;
+  }
+  const saved = !added || persist();
+  if (added) scan();
+  return { added, duplicates, saved };
+}
 function amount(raw, decimals) {
   try {
     const digits = BigInt(raw).toString();
@@ -55,8 +64,8 @@ function render() {
   $('#asset-count').textContent = items.length;
   $('#asset-badge').textContent = visible.length;
   $('#wallet-empty').hidden = wallets.length > 0;
-  $('#wallet-list').innerHTML = wallets.map((wallet, index) => `<div class="wallet-row"><span class="wallet-avatar">${escapeHtml((wallet.name || 'W').charAt(0).toUpperCase())}</span><div class="wallet-info"><strong>${escapeHtml(wallet.name || `Wallet ${index + 1}`)}</strong><span>${escapeHtml(shortAddress(wallet.address))}</span></div><button class="remove-wallet" data-address="${escapeHtml(wallet.address)}" aria-label="Remove ${escapeHtml(wallet.name || 'wallet')}" title="Remove wallet">×</button></div>`).join('');
-  $('#asset-list').innerHTML = visible.map(asset => `<tr><td><div class="asset-name"><span class="token-icon" style="--token-color:${asset.meta.color}">${escapeHtml(asset.symbol.slice(0, 1).toUpperCase())}</span><span><strong>${escapeHtml(asset.name)}</strong><small>${escapeHtml(asset.symbol)} · ${escapeHtml(asset.wallet.name || shortAddress(asset.wallet.address))}${asset.tokenId ? ` · #${escapeHtml(asset.tokenId)}` : ''}</small></span></div></td><td><span class="network-pill"><i style="background:${asset.meta.color}"></i>${asset.meta.name}</span></td><td><strong>${quantity(asset.balance)}</strong><small>${escapeHtml(asset.symbol)}</small></td><td><strong>${asset.price === null ? '—' : money(asset.balance * asset.price)}</strong><small>${asset.price === null ? (asset.nft ? 'Collectible' : 'Price unavailable') : 'USD'}</small></td></tr>`).join('');
+  $('#wallet-list').innerHTML = wallets.map(wallet => `<div class="wallet-row"><span class="wallet-avatar">◈</span><div class="wallet-info"><strong title="${escapeHtml(wallet.address)}">${escapeHtml(wallet.address)}</strong><span>Watch-only address</span></div><button class="remove-wallet" data-address="${escapeHtml(wallet.address)}" aria-label="Remove ${escapeHtml(wallet.address)}" title="Remove wallet">×</button></div>`).join('');
+  $('#asset-list').innerHTML = visible.map(asset => `<tr><td><div class="asset-name"><span class="token-icon" style="--token-color:${asset.meta.color}">${escapeHtml(asset.symbol.slice(0, 1).toUpperCase())}</span><span><strong>${escapeHtml(asset.name)}</strong><small>${escapeHtml(asset.symbol)} · ${escapeHtml(shortAddress(asset.wallet.address))}${asset.tokenId ? ` · #${escapeHtml(asset.tokenId)}` : ''}</small></span></div></td><td><span class="network-pill"><i style="background:${asset.meta.color}"></i>${asset.meta.name}</span></td><td><strong>${quantity(asset.balance)}</strong><small>${escapeHtml(asset.symbol)}</small></td><td><strong>${asset.price === null ? '—' : money(asset.balance * asset.price)}</strong><small>${asset.price === null ? (asset.nft ? 'Collectible' : 'Price unavailable') : 'USD'}</small></td></tr>`).join('');
   $('#empty-state').hidden = visible.length > 0;
   const empty = $('#empty-state');
   if (wallets.length) {
@@ -102,22 +111,68 @@ async function scan() {
   await Promise.all(tasks);
   if (version === scanVersion) { loading = false; render(); }
 }
-document.querySelectorAll('[data-open]').forEach(button => button.addEventListener('click', () => { $('#form-error').textContent = ''; form.reset(); dialog.showModal(); }));
-$('#close-dialog').addEventListener('click', () => dialog.close());
-dialog.addEventListener('click', event => { if (event.target === dialog) dialog.close(); });
-form.addEventListener('submit', event => {
+document.querySelectorAll('[data-open]').forEach(button => button.addEventListener('click', () => {
+  $('#import-wallets').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  $('#wallet-address').focus({ preventScroll: true });
+}));
+$('#address-form').addEventListener('submit', event => {
   event.preventDefault();
-  const address = $('#wallet-address').value.trim();
-  const name = $('#wallet-name').value.trim();
-  if (!/^0x[a-fA-F0-9]{40}$/.test(address)) { $('#form-error').textContent = 'Please enter a valid 0x address with 40 hexadecimal characters.'; return; }
-  if (wallets.some(wallet => wallet.address.toLowerCase() === address.toLowerCase())) { $('#form-error').textContent = 'This wallet has already been added.'; return; }
-  wallets.push({ address, name }); persist(); dialog.close(); scan();
+  const field = $('#wallet-address');
+  const address = field.value.trim();
+  if (!/^0x[a-fA-F0-9]{40}$/.test(address)) return importStatus('Enter a valid 0x address with 40 hexadecimal characters.', true);
+  const result = addAddresses([address]);
+  field.value = '';
+  importStatus(result.duplicates ? 'This address is already being tracked.' : result.saved ? 'Address added. Scanning balances…' : 'Address added for this session, but browser storage is unavailable.', !result.saved);
+});
+$('#seed-file').addEventListener('change', () => {
+  // Do not display the file name: it might itself contain sensitive information.
+  $('#file-name').textContent = $('#seed-file').files.length ? 'Text file selected' : 'No file selected';
+});
+function readTextFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error('Could not read file'));
+    reader.readAsText(file, 'UTF-8');
+  });
+}
+$('#seed-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const submit = $('#seed-form button[type="submit"]');
+  if (submit.disabled) return;
+  const pasted = $('#seed-phrases').value;
+  const file = $('#seed-file').files[0];
+  // Clear visible secrets and file selection immediately, including on errors.
+  $('#seed-phrases').value = ''; $('#seed-file').value = ''; $('#file-name').textContent = 'No file selected';
+  if (!pasted.trim() && !file) return importStatus('Paste a seed phrase or choose a .txt file.', true);
+  if (pasted.length > 256 * 1024 || (file && (file.size > 256 * 1024 || !/\.txt$/i.test(file.name)))) return importStatus('Choose a .txt file under 256 KB and keep pasted text under 256 KB.', true);
+  submit.disabled = true;
+  try {
+    const sources = [];
+    if (pasted.trim()) sources.push({ label: 'Pasted text', text: pasted });
+    if (file) sources.push({ label: 'Text file', text: await readTextFile(file) });
+    const lineCount = sources.reduce((count, source) => count + source.text.split(/\r?\n/).filter(line => line.trim()).length, 0);
+    if (lineCount > 50) return importStatus('Import at most 50 phrases at a time, one complete phrase per line.', true);
+    const addresses = []; const problems = [];
+    for (const source of sources) {
+      const result = window.deriveWatchAddresses(source.text);
+      addresses.push(...result.addresses);
+      if (result.invalid.length) problems.push(`${source.label}: invalid line${result.invalid.length === 1 ? '' : 's'} ${result.invalid.join(', ')}`);
+    }
+    const { added, duplicates, saved } = addAddresses(addresses);
+    const parts = [`${added} wallet${added === 1 ? '' : 's'} added`, ...(duplicates ? [`${duplicates} duplicate${duplicates === 1 ? '' : 's'} skipped`] : []), ...problems];
+    if (!saved) parts.push('Browser storage unavailable; wallets will only last this session');
+    if (!addresses.length && !problems.length) parts.push('No phrases found');
+    importStatus(`${parts.join(' · ')}. ${added ? 'Scanning balances…' : 'Use one complete valid phrase per line.'}`, !saved || problems.length > 0 || !addresses.length);
+  } catch (_) { importStatus('Could not read or process the input. Try a UTF-8 .txt file with one valid phrase per line.', true); }
+  finally { submit.disabled = false; }
 });
 $('#wallet-list').addEventListener('click', event => {
   const button = event.target.closest('[data-address]');
   if (!button) return;
   wallets = wallets.filter(wallet => wallet.address.toLowerCase() !== button.dataset.address.toLowerCase());
-  persist(); scan();
+  const saved = persist(); scan();
+  if (!saved) importStatus('The removal could not be saved in browser storage.', true);
 });
 $('#network-filter').addEventListener('change', render);
 $('#refresh').addEventListener('click', scan);

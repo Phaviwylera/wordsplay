@@ -13,7 +13,7 @@ COPY --chown=node:node package.json server.js ./
 COPY --chown=node:node api ./api
 COPY --chown=node:node lib ./lib
 COPY --chown=node:node public ./public
-COPY --from=build --chown=node:node /app/public/wallet-bundle.js ./public/wallet-bundle.js
+COPY --from=build --chown=node:node /app/public/wallet-bundle.js /app/public/derive-bundle.js ./public/
 USER node
 EXPOSE 3000
 CMD ["node", "server.js"]
