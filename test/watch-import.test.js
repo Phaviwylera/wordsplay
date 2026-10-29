@@ -364,3 +364,143 @@ test('rejects invalid UTF-8 file locally rather than importing partial results',
   assert.equal(requests.length, 0);
   dom.window.close();
 });
+
+test('remove all clears every page and cancels an ongoing scan without accepting late results', async () => {
+  const dom = new JSDOM(fs.readFileSync('public/index.html', 'utf8'), { url: 'https://wallet.example/', runScripts: 'outside-only' });
+  const w = dom.window;
+  const wallets = Array.from({ length: 105 }, (_, i) => ({ address: `0x${(i + 1).toString(16).padStart(40, '0')}` }));
+  w.localStorage.setItem('walleto.wallets', JSON.stringify(wallets));
+  const requests = [];
+  w.fetch = (url, options) => new Promise(resolve => requests.push({ url, signal: options.signal, resolve }));
+  let confirmation;
+  w.confirm = message => { confirmation = message; return true; };
+  w.eval(bundle); w.eval(fs.readFileSync('public/app.js', 'utf8'));
+  const $ = id => w.document.getElementById(id);
+  assert.equal(requests.length, 8);
+  assert.equal($('remove-all').hidden, false);
+  assert.equal($('remove-all').disabled, false);
+  assert.match($('remove-all').textContent, /105/);
+  $('wallet-next').click();
+  $('remove-all').click();
+  assert.match(confirmation, /105 wallets.*watch list.*does not delete your wallets or funds/i);
+  assert.ok(requests.every(request => request.signal.aborted));
+  assert.deepEqual(JSON.parse(w.localStorage.getItem('walleto.wallets')), []);
+  assert.equal($('wallet-count').textContent, '0');
+  assert.equal($('wallet-list').children.length, 0);
+  assert.equal($('asset-list').children.length, 0);
+  assert.equal($('scan-progress').hidden, true);
+  assert.equal($('remove-all').hidden, true);
+  assert.equal($('refresh').disabled, true);
+  const asset = { ...zeroNative, rawBalance: '1000000000000000000', price: '100' };
+  for (const request of requests) request.resolve({ ok: true, json: async () => ({ assets: [asset] }) });
+  await wait();
+  assert.equal(requests.length, 8, 'queued requests never start');
+  assert.equal($('wallet-count').textContent, '0');
+  assert.equal($('asset-count').textContent, '0');
+  assert.equal($('total-value').textContent, '$0.00');
+  dom.window.close();
+});
+
+test('remove all confirmation can be declined without interrupting the scan', async () => {
+  const { dom, w, $ } = setup();
+  w.fetch = () => new Promise(() => {});
+  w.confirm = () => false;
+  $('wallet-address').value = address1; submit(w, $('address-form'));
+  $('remove-all').click();
+  assert.equal($('wallet-count').textContent, '1');
+  assert.equal(JSON.parse(w.localStorage.getItem('walleto.wallets')).length, 1);
+  assert.equal($('scan-progress').hidden, false);
+  assert.equal($('refresh').disabled, true);
+  dom.window.close();
+});
+
+test('remove all warns when removal cannot be saved in browser storage', async () => {
+  const { dom, w, $ } = setup();
+  $('wallet-address').value = address1; submit(w, $('address-form'));
+  w.confirm = () => true;
+  const setItem = w.Storage.prototype.setItem;
+  w.Storage.prototype.setItem = function (key, value) {
+    if (key === 'walleto.wallets') throw new Error('storage unavailable');
+    return setItem.call(this, key, value);
+  };
+  $('remove-all').click();
+  assert.equal($('wallet-count').textContent, '0');
+  assert.equal(JSON.parse(w.localStorage.getItem('walleto.wallets')).length, 1);
+  assert.match($('import-status').textContent, /could not save.*may return after a reload/i);
+  assert.equal($('import-status').classList.contains('error'), true);
+  dom.window.close();
+});
+
+test('retry failed checks preserves successful balances and retries only failures', async () => {
+  const dom = new JSDOM(fs.readFileSync('public/index.html', 'utf8'), { url: 'https://wallet.example/', runScripts: 'outside-only' });
+  const w = dom.window;
+  w.localStorage.setItem('walleto.wallets', JSON.stringify([{ address: address1 }, { address: address2 }]));
+  let fail = true;
+  const requests = [];
+  w.fetch = async url => {
+    const params = new URL(url, 'https://wallet.example').searchParams;
+    requests.push({ address: params.get('address'), network: params.get('network') });
+    if (fail && params.get('address') === address1 && params.get('network') === 'base') return { ok: false, status: 400 };
+    return { ok: true, json: async () => ({ assets: [params.get('address') === address2 ? { ...zeroNative, rawBalance: '1000000000000000000', price: '2' } : zeroNative] }) };
+  };
+  w.scanDirect = async () => { throw new Error('Indexer unavailable'); };
+  w.eval(bundle); w.eval(fs.readFileSync('public/app.js', 'utf8'));
+  const $ = id => w.document.getElementById(id);
+  for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
+  assert.equal(requests.length, 8);
+  assert.match($('scan-errors').textContent, /Base: 1.*unavailable.*not treated as zero/i);
+  assert.equal($('retry-failed').hidden, false);
+  assert.equal($('total-value').textContent, '$8.00');
+  assert.match($('remove-zero').textContent, /\(0\)/);
+  fail = false;
+  $('retry-failed').click();
+  for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
+  assert.equal(requests.length, 9);
+  assert.deepEqual(requests[8], { address: address1, network: 'base' });
+  assert.equal($('total-value').textContent, '$8.00');
+  assert.equal($('progress-percent').textContent, '100%');
+  assert.equal($('retry-failed').hidden, true);
+  assert.match($('wallet-list').children[0].textContent, /✓ Scanned/);
+  assert.match($('remove-zero').textContent, /\(1\)/);
+  dom.window.close();
+});
+
+test('automatically retries transient rate limits and reports remaining rate-limited checks', { timeout: 10000 }, async () => {
+  const dom = new JSDOM(fs.readFileSync('public/index.html', 'utf8'), { url: 'https://wallet.example/', runScripts: 'outside-only' });
+  const w = dom.window;
+  w.localStorage.setItem('walleto.wallets', JSON.stringify([{ address: address1 }]));
+  const calls = {};
+  w.fetch = async url => {
+    const network = new URL(url, 'https://wallet.example').searchParams.get('network');
+    calls[network] = (calls[network] || 0) + 1;
+    if (network === 'base' || (network === 'ethereum' && calls[network] === 1)) return { ok: false, status: 429 };
+    return { ok: true, json: async () => ({ assets: [zeroNative] }) };
+  };
+  w.scanDirect = async () => { throw Object.assign(new Error('Indexer returned 429'), { status: 429 }); };
+  w.eval(bundle); w.eval(fs.readFileSync('public/app.js', 'utf8'));
+  const $ = id => w.document.getElementById(id);
+  for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
+  assert.equal(calls.ethereum, 2);
+  assert.equal(calls.base, 2);
+  assert.match($('progress-detail').textContent, /1 failed/);
+  assert.match($('scan-errors').textContent, /Base: 1.*rate limiting/i);
+  assert.match($('wallet-list').textContent, /Incomplete/);
+  assert.equal($('remove-zero').disabled, true);
+  dom.window.close();
+});
+
+test('canceling a scan during transient retry backoff prevents further requests', async () => {
+  const { dom, w, $ } = setup();
+  let calls = 0;
+  w.fetch = async () => { calls++; return { ok: false, status: 429 }; };
+  w.scanDirect = async () => { throw Object.assign(new Error('rate limit'), { status: 429 }); };
+  w.confirm = () => true;
+  $('wallet-address').value = address1; submit(w, $('address-form'));
+  await wait();
+  assert.equal(calls, 4);
+  $('remove-all').click();
+  await new Promise(resolve => setTimeout(resolve, 1100));
+  assert.equal(calls, 4);
+  assert.equal($('wallet-count').textContent, '0');
+  dom.window.close();
+});
