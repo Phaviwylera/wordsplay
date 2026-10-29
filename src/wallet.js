@@ -1,4 +1,4 @@
-import { Wallet, JsonRpcProvider, getAddress, parseEther, formatEther, isAddress } from 'ethers';
+import { Wallet, Mnemonic, JsonRpcProvider, getAddress, parseEther, formatEther, isAddress } from 'ethers';
 
 const CHAINS = {
   ethereum: { name: 'Ethereum', chainId: 1n, rpc: 'https://ethereum-rpc.publicnode.com', explorer: 'https://eth.blockscout.com' },
@@ -49,6 +49,10 @@ $('#save-form').addEventListener('submit', async event => {
   const password = $('#new-password').value;
   if (password.length < 12 || password !== $('#confirm-password').value) return message('Use matching passwords of at least 12 characters.', true);
   if (mode === 'create' && !$('#backed-up').checked) return message('Back up your recovery phrase before continuing.', true);
+  if (mode === 'import') {
+    const phrase = $('#phrase').value.trim().toLowerCase().replace(/\s+/g, ' ');
+    if (!Mnemonic.isValidMnemonic(phrase)) return message('Invalid seed phrase. Check your English BIP-39 words and their order.', true);
+  }
   try {
     if (mode === 'import') pendingWallet = Wallet.fromPhrase($('#phrase').value.trim().toLowerCase().replace(/\s+/g, ' '));
     if (!pendingWallet) throw new Error('Invalid wallet');
@@ -134,3 +138,7 @@ $('#confirm-send').addEventListener('click', async () => {
 });
 window.addEventListener('storage', event => { if (event.key === STORE && !wallet) { clearSetup(); screen(); } });
 screen();
+if (new URLSearchParams(window.location.search).get('mode') === 'import' && storageAvailable) {
+  if (stored()) message('A wallet is already saved in this browser. Unlock it, or remove its browser copy only after backing up its recovery phrase.', true);
+  else $('#show-import').click();
+}
