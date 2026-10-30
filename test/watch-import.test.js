@@ -639,3 +639,27 @@ test('a failed Bitcoin check can be retried without losing successful mixed-netw
   assert.equal($('remove-zero').disabled, true);
   dom.window.close();
 });
+
+test('native-only L2 fallback remains incomplete and retry replaces rather than duplicates results', async () => {
+  const { dom, w, $ } = setup();
+  let full = false;
+  const native = { ...zeroNative, rawBalance: '1000000000000000000' };
+  w.scanDirect = async () => { throw new Error('indexer unavailable'); };
+  w.fetch = async url => {
+    const network = new URL(url, w.location.href).searchParams.get('network');
+    if (network === 'optimism') return { ok: true, json: async () => full ? { assets: [{ ...native, price: '100' }] } : { coverage: 'native-only', assets: [native] } };
+    return { ok: true, json: async () => ({ assets: [zeroNative] }) };
+  };
+  $('wallet-address').value = address1; submit(w, $('address-form'));
+  for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
+  assert.equal($('asset-list').querySelectorAll('tr').length, 1);
+  assert.match($('scan-errors').textContent, /Optimism: 1.*Native balance only; token and NFT data unavailable/);
+  assert.match($('wallet-list').textContent, /Incomplete/);
+  assert.equal($('retry-failed').hidden, false);
+  full = true; $('retry-failed').click();
+  for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
+  assert.equal($('asset-list').querySelectorAll('tr').length, 1);
+  assert.equal($('total-value').textContent, '$100.00');
+  assert.equal($('retry-failed').hidden, true);
+  dom.window.close();
+});

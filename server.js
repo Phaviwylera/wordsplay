@@ -17,7 +17,7 @@ http.createServer(async (req, res) => {
   const headers = { 'Content-Type': `${file[1]}; charset=utf-8` };
   if (url.pathname === '/') {
     headers['Cache-Control'] = 'no-store';
-    headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://eth.blockscout.com https://base.blockscout.com https://arbitrum.blockscout.com https://optimism.blockscout.com https://mempool.space https://api.trongrid.io https://bsc-rpc.publicnode.com; object-src 'none'; base-uri 'none'; form-action 'self'";
+    headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://eth.blockscout.com https://base.blockscout.com https://arbitrum.blockscout.com https://optimism.blockscout.com https://arbitrum-one-rpc.publicnode.com https://optimism-rpc.publicnode.com https://mempool.space https://api.trongrid.io https://bsc-rpc.publicnode.com; object-src 'none'; base-uri 'none'; form-action 'self'";
     headers['Referrer-Policy'] = 'no-referrer';
   }
   if (url.pathname === '/wordlist') {
