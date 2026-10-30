@@ -101,3 +101,62 @@ test('scan API preserves a rate-limit response for the client', async () => {
     console.error = originalError;
   }
 });
+
+const btc = 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4'; // Public BIP-350 test vector.
+const tron = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'; // Public token-contract address.
+test('validates Bitcoin and TRON checksums, EVM format and network matching', async () => {
+  for (const value of [btc, btc.toUpperCase(), '1BoatSLRHtKNngkdXEeobR76b53LETtpyT', '3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy', 'bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0', tron, address]) assert.equal(validAddress(value), true, value);
+  for (const value of ['bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t5', 'Bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4', 'tb1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3q0sl5k7', 'bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqh2y7hd', `${tron.slice(0, -1)}u`, 'a'.repeat(10000)]) assert.equal(validAddress(value), false, value.slice(0, 100));
+  await assert.rejects(scanWallet(btc, 'ethereum'), /match network/);
+  await assert.rejects(scanWallet(address, 'tron'), /match network/);
+  await assert.rejects(scanWallet(tron, 'bnb'), /match network/);
+});
+
+test('scans Bitcoin confirmed and pending amounts with exact satoshis', async () => {
+  const fetcher = async url => {
+    assert.equal(url, `https://mempool.space/api/address/${btc}`);
+    return { ok: true, json: async () => ({ chain_stats: { funded_txo_sum: 500000000, spent_txo_sum: 200000000 }, mempool_stats: { funded_txo_sum: 500, spent_txo_sum: 100 } }) };
+  };
+  const result = await scanWallet(btc, 'bitcoin', fetcher);
+  assert.equal(result.assets[0].rawBalance, '300000400');
+  assert.equal(result.assets[0].decimals, 8);
+  assert.equal(result.assets[0].price, null);
+  assert.equal(result.coverage, 'native-only');
+  const { scanDirect } = require('../public/direct-scan');
+  assert.equal((await scanDirect(btc, 'bitcoin', fetcher)).assets[0].rawBalance, '300000400');
+  for (const bad of [{}, { chain_stats: { funded_txo_sum: 1, spent_txo_sum: 2 }, mempool_stats: { funded_txo_sum: 0, spent_txo_sum: 0 } }, { chain_stats: { funded_txo_sum: Number.MAX_SAFE_INTEGER + 1, spent_txo_sum: 0 }, mempool_stats: { funded_txo_sum: 0, spent_txo_sum: 0 } }]) {
+    await assert.rejects(scanWallet(btc, 'bitcoin', async () => ({ ok: true, json: async () => bad })), /Invalid/);
+  }
+});
+
+test('scans TRX and native BNB with strict responses', async () => {
+  const tx = await scanWallet(tron, 'tron', async url => {
+    assert.equal(url, `https://api.trongrid.io/v1/accounts/${tron}`);
+    return { ok: true, json: async () => ({ success: true, data: [{ balance: 1234567 }] }) };
+  });
+  assert.equal(tx.assets[0].rawBalance, '1234567');
+  assert.equal(tx.assets[0].decimals, 6);
+  const bnb = await scanWallet(address, 'bnb', async (url, options) => {
+    assert.equal(url, 'https://bsc-rpc.publicnode.com');
+    assert.equal(options.method, 'POST');
+    const body = JSON.parse(options.body);
+    assert.equal(body.method, 'eth_getBalance');
+    assert.deepEqual(body.params, [address, 'latest']);
+    return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: '0xde0b6b3a7640000' }) };
+  });
+  assert.equal(bnb.assets[0].rawBalance, '1000000000000000000');
+  assert.equal(bnb.coverage, 'native-only');
+  await assert.rejects(scanWallet(tron, 'tron', async () => ({ ok: true, json: async () => ({ success: true, data: [] }) })), /Incomplete/);
+  await assert.rejects(scanWallet(tron, 'tron', async () => ({ ok: true, json: async () => ({ success: true, data: [{}] }) })), /Invalid/);
+  await assert.rejects(scanWallet(address, 'bnb', async () => ({ ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: 'garbage' }) })), /Invalid/);
+  await assert.rejects(scanWallet(address, 'bnb', async () => ({ ok: false, status: 429 })), /429/);
+});
+
+test('scan API rejects valid addresses submitted to the wrong network', async () => {
+  const handler = require('../api/scan');
+  const result = {};
+  const res = { status(code) { result.status = code; return this; }, json(body) { result.body = body; return this; } };
+  await handler({ method: 'GET', query: { address: btc, network: 'tron' } }, res);
+  assert.equal(result.status, 400);
+  assert.match(result.body.error, /match network/);
+});

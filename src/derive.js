@@ -1,4 +1,9 @@
-import { Wallet, Mnemonic } from 'ethers';
+import { Wallet, Mnemonic, sha256, getBytes } from 'ethers';
+import { createAddressTools } from '../lib/addresses';
+import { scanNativeNetwork } from '../lib/native-scanner';
+
+window.watchAddressTools = createAddressTools(bytes => getBytes(sha256(bytes)));
+window.scanNativeNetwork = scanNativeNetwork;
 
 // Only derived public addresses and a limited set of invalid line numbers are
 // returned. Never persist or send a phrase or the original file contents.
