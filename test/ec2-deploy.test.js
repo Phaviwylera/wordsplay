@@ -8,11 +8,15 @@ const { spawnSync } = require('node:child_process');
 const script = path.resolve('deploy/ec2/update.sh');
 const commit = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const previous = `walleto:${'b'.repeat(40)}`;
-function harness({ failBuild = false, failStart = false, failProbe = false, alreadyDeployed = false } = {}) {
+function harness({ failBuild = false, failStart = false, failProbe = false, alreadyDeployed = false, background = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-deploy-'));
   const bin = path.join(dir, 'bin'); const state = path.join(dir, 'state'); const repo = path.join(dir, 'repo');
   fs.mkdirSync(bin); fs.mkdirSync(state); fs.mkdirSync(repo);
   fs.writeFileSync(path.join(state, 'current-image'), previous + '\n');
+  if (background) fs.writeFileSync(path.join(state, 'background-enabled'), '');
+  // The production deploy service runs as root; tests need not change ownership.
+  fs.writeFileSync(path.join(bin, 'chown'), '#!/bin/bash\nexit 0\n');
+  fs.chmodSync(path.join(bin, 'chown'), 0o755);
   if (alreadyDeployed) fs.writeFileSync(path.join(state, 'deployed.sha'), commit + '\n');
   fs.writeFileSync(path.join(bin, 'git'), `#!/bin/bash\necho "git $*" >> "$LOG"\nif [[ "$1" == rev-parse ]]; then echo "$COMMIT"; fi\n`);
   fs.writeFileSync(path.join(bin, 'docker'), `#!/bin/bash
@@ -79,4 +83,16 @@ test('failed candidate health check leaves the running app untouched', () => {
     assert.equal(fs.existsSync(path.join(h.state, 'deployed.sha')), false);
     assert.equal(fs.readFileSync(path.join(h.state, 'current-image'), 'utf8').trim(), previous);
   } finally { fs.rmSync(h.dir, { recursive: true, force: true }); }
+});
+
+test('background volume is private, persistent and opt-in', () => {
+  const normal = harness();
+  const enabled = harness({ background: true });
+  try {
+    assert.equal(normal.result.status, 0, normal.result.stderr);
+    assert.doesNotMatch(normal.log, /WALLETO_BACKGROUND_DIR/);
+    assert.equal(enabled.result.status, 0, enabled.result.stderr);
+    assert.match(enabled.log, /-p 127\.0\.0\.1:3000:3000 -e WALLETO_BACKGROUND_DIR=\/var\/lib\/walleto-jobs -v .*\/background-jobs:\/var\/lib\/walleto-jobs/);
+    assert.equal(fs.statSync(path.join(enabled.state, 'background-jobs')).mode & 0o777, 0o700);
+  } finally { fs.rmSync(normal.dir, { recursive: true, force: true }); fs.rmSync(enabled.dir, { recursive: true, force: true }); }
 });
