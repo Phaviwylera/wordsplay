@@ -365,6 +365,20 @@ test('rejects invalid UTF-8 file locally rather than importing partial results',
   dom.window.close();
 });
 
+test('remove all is visible in the top bar and enabled when a wallet is added', async () => {
+  const { dom, w, $ } = setup();
+  const button = $('remove-all');
+  assert.ok(button.closest('header.topbar'));
+  assert.equal(w.document.querySelectorAll('#remove-all').length, 1);
+  assert.equal(button.hidden, false);
+  assert.equal(button.disabled, true);
+  w.fetch = () => new Promise(() => {});
+  $('wallet-address').value = address1; submit(w, $('address-form'));
+  assert.equal(button.disabled, false, 'available while scanning');
+  assert.match(button.textContent, /\(1\)/);
+  dom.window.close();
+});
+
 test('remove all clears every page and cancels an ongoing scan without accepting late results', async () => {
   const dom = new JSDOM(fs.readFileSync('public/index.html', 'utf8'), { url: 'https://wallet.example/', runScripts: 'outside-only' });
   const w = dom.window;
@@ -389,7 +403,8 @@ test('remove all clears every page and cancels an ongoing scan without accepting
   assert.equal($('wallet-list').children.length, 0);
   assert.equal($('asset-list').children.length, 0);
   assert.equal($('scan-progress').hidden, true);
-  assert.equal($('remove-all').hidden, true);
+  assert.equal($('remove-all').hidden, false);
+  assert.equal($('remove-all').disabled, true);
   assert.equal($('refresh').disabled, true);
   const asset = { ...zeroNative, rawBalance: '1000000000000000000', price: '100' };
   for (const request of requests) request.resolve({ ok: true, json: async () => ({ assets: [asset] }) });
