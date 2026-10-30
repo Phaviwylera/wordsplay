@@ -1,52 +1,88 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#050f3b"><title>Walleto — your wallets, in one place</title>
-  <link rel="stylesheet" href="/style.css"><script src="/derive-bundle.js" defer></script><script src="/direct-scan.js" defer></script><script src="/app.js" defer></script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#38345c">
+  <title>Walleto — portfolio overview</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/derive-bundle.js" defer></script>
+  <script src="/direct-scan.js" defer></script>
+  <script src="/app.js" defer></script>
 </head>
 <body>
 <div class="app-shell">
-  <aside class="sidebar">
-    <a class="brand" href="/" aria-label="Walleto home"><span class="brand-mark"><i></i><i></i><i></i><i></i></span><span>walleto<span class="brand-dot">.</span></span></a>
-    <div class="side-label">WORKSPACE</div>
-    <nav><a class="nav-item active" href="#overview"><span class="nav-icon">▦</span> Overview <span class="nav-arrow">↗</span></a><a class="nav-item" href="#assets"><span class="nav-icon">◫</span> Assets</a><a class="nav-item" href="#wallets"><span class="nav-icon">▤</span> My wallets</a><a class="nav-item" href="#import-wallets"><span class="nav-icon">＋</span> Add wallets</a></nav>
-    <div class="sidebar-bottom"><div class="side-card"><div class="side-card-icon">✳</div><strong>Your keys stay yours.</strong><p>Track public addresses without sharing your keys or recovery phrase.</p><span>WATCH-ONLY <span>↗</span></span></div><div class="side-footer"><span class="avatar">W</span><span><strong>Personal space</strong><small>All your wallets, together</small></span><span class="dots">···</span></div></div>
+  <aside class="sidebar" aria-label="Main navigation">
+    <a class="brand" href="/" aria-label="Walleto home"><span class="brand-mark" aria-hidden="true">w</span><span>walleto<span class="brand-dot">.</span></span></a>
+    <p class="side-label">Workspace</p>
+    <nav aria-label="Dashboard sections">
+      <a class="nav-item active" href="#overview"><span class="nav-icon" aria-hidden="true">◫</span> Overview <span class="nav-arrow" aria-hidden="true">›</span></a>
+      <a class="nav-item" href="#assets"><span class="nav-icon" aria-hidden="true">▤</span> Assets</a>
+      <a class="nav-item" href="#wallets"><span class="nav-icon" aria-hidden="true">▧</span> Wallets</a>
+      <a class="nav-item" href="#import-wallets"><span class="nav-icon" aria-hidden="true">+</span> Add wallets</a>
+    </nav>
+    <div class="sidebar-bottom">
+      <div class="sidebar-note"><span class="sidebar-note-icon" aria-hidden="true">↗</span><strong>Watching, not holding</strong><p>Addresses are tracked on this browser. Your assets stay in your wallets.</p></div>
+      <a class="sidebar-wallet-link" href="/wallet">Self-custody wallet <span aria-hidden="true">↗</span></a>
+    </div>
   </aside>
   <main id="overview" class="main">
-    <header class="topbar"><div class="mobile-brand">walleto<span>.</span></div><div class="breadcrumb">Workspace <span>/</span> <strong>Overview</strong></div><div class="top-actions"><span class="live"><i></i> WATCH-ONLY VIEW</span><button class="remove-all-button" id="remove-all" type="button" disabled title="Remove all watch-list entries">Remove all wallets (0)</button><button class="add-button" data-open><span>＋</span> Add wallet</button></div></header>
+    <header class="topbar">
+      <a class="mobile-brand" href="/">walleto<span>.</span></a>
+      <div class="breadcrumb"><span>Workspace</span><span class="breadcrumb-divider">/</span><strong>Overview</strong></div>
+      <div class="top-actions">
+        <span class="live"><i></i>Watch-only</span>
+        <button class="remove-all-button" id="remove-all" type="button" disabled title="Remove all watch-list entries">Remove all wallets (0)</button>
+        <button class="add-button" type="button" data-open><span aria-hidden="true">+</span> Add wallet</button>
+      </div>
+    </header>
     <div class="content">
-      <div class="heading"><div><div class="eyebrow"><span>✳</span> YOUR WALLET DASHBOARD</div><h1>Good to see you<span>.</span></h1><p>Your crypto, in one clear view. Track every wallet with confidence.</p></div><div class="date-pill"><span>◷</span> <span id="today"></span></div></div>
+      <div class="heading"><div><div class="heading-context">Your workspace <span aria-hidden="true">/</span> Portfolio</div><h1>Portfolio overview</h1><p>All your tracked wallets, in one place.</p></div><div class="date-pill">As of <span id="today"></span></div></div>
+
+      <section class="summary-grid" aria-label="Portfolio overview">
+        <div class="balance-card"><div class="balance-top"><span>Total known value</span><span class="balance-currency">USD</span></div><div class="balance-value" id="total-value">$0.00</div><div class="balance-foot"><span class="balance-indicator" aria-hidden="true"></span><span id="value-note">Add a wallet to get started</span></div></div>
+        <div class="stat-card"><div class="stat-label">Wallets tracked <span class="stat-icon" aria-hidden="true">▧</span></div><div class="stat-number" id="wallet-count">0</div><p>Public addresses in your list</p></div>
+        <div class="stat-card"><div class="stat-label">Assets found <span class="stat-icon" aria-hidden="true">▤</span></div><div class="stat-number" id="asset-count">0</div><p>Across supported networks</p></div>
+      </section>
+
+      <section class="scan-progress panel" id="scan-progress" hidden aria-label="Balance scan progress">
+        <div class="scan-progress-heading"><div><span class="section-kicker">Balance scan</span><strong id="progress-text">Preparing scan…</strong></div><strong id="progress-percent">0%</strong></div>
+        <progress id="progress-bar" value="0" max="100" aria-label="Network scan progress"></progress>
+        <div class="progress-detail" id="progress-detail" role="status" aria-live="polite"></div>
+        <div class="scan-errors" id="scan-errors" hidden></div><button class="retry-button" id="retry-failed" type="button" hidden>Retry failed checks</button>
+      </section>
+
       <section class="quick-import panel" id="import-wallets" aria-labelledby="import-title">
-        <div class="quick-import-heading"><div><div class="section-kicker">WATCH-ONLY · NO PASSWORD</div><h2 id="import-title">Add wallets</h2><p>Paste a public address or derive addresses from seed phrases. Balances are scanned automatically.</p></div><span class="watch-badge">◉ &nbsp; VIEW ONLY</span></div>
+        <div class="quick-import-heading"><div><h2 id="import-title">Add wallets</h2><p>Track a public address or import multiple wallets locally.</p></div><span class="watch-badge"><span aria-hidden="true">◉</span> Watch-only</span></div>
         <div class="quick-import-grid">
-          <form id="address-form" class="quick-form"><label for="wallet-address">WALLET ADDRESS</label><div class="quick-row"><input id="wallet-address" placeholder="Paste a 0x wallet address" autocomplete="off" spellcheck="false" required><button type="submit">Add address</button></div><p>Track a public EVM address without sharing a seed phrase.</p></form>
-          <form id="seed-form" class="quick-form"><label for="seed-phrases">SEED PHRASE</label><div class="seed-entry"><textarea id="seed-phrases" placeholder="Paste one seed phrase per line" rows="2" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea><div class="seed-actions"><label class="file-button" for="seed-file">Choose .txt file</label><input id="seed-file" type="file" accept=".txt,text/plain"><span id="file-name">No file selected</span><button type="submit">Add &amp; scan</button></div></div><p>For a .txt file like yours, put one complete English BIP-39 phrase on each line. Choose the file, then click Add &amp; scan. No fixed phrase-count or file-size limit. Large imports may take a long time and are subject to browser and network limits.</p></form>
+          <form id="address-form" class="quick-form address-form"><div class="form-heading"><label for="wallet-address">Public address</label><span>Recommended</span></div><p>Track an EVM wallet without sharing its keys.</p><div class="address-entry"><input id="wallet-address" placeholder="0x wallet address" autocomplete="off" spellcheck="false" required><div class="address-actions"><span>Public address only</span><button type="submit">Add address</button></div></div><p class="file-help">Supports Ethereum, Base, Arbitrum and Optimism.</p></form>
+          <form id="seed-form" class="quick-form seed-form"><div class="form-heading"><label for="seed-phrases">Seed phrases</label><span>Processed locally</span></div><p>One complete English BIP-39 phrase per line.</p><div class="seed-entry"><textarea id="seed-phrases" placeholder="Paste seed phrases here, one per line" rows="2" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea><div class="seed-actions"><label class="file-button" for="seed-file">Choose .txt file</label><input id="seed-file" type="file" accept=".txt,text/plain"><span id="file-name">No file selected</span><button type="submit">Add &amp; scan</button></div></div><p class="file-help">No fixed file-size or phrase-count limit. Large imports depend on browser and network capacity.</p></form>
         </div>
-        <div class="seed-notice"><strong>Security:</strong> A seed phrase gives full control of your funds. Enter it only in a site and browser you trust. This app is unaudited; use a public address instead for valuable wallets. Phrases are processed locally and cleared after import; only derived public addresses are saved and sent to indexers. Uses the first Ethereum account (m/44'/60'/0'/0/0), without an extra passphrase.</div>
+        <div class="seed-notice"><strong>Security note</strong><span>A seed phrase gives full control of your funds. Never share it; enter it only on a site and device you trust. This app is experimental and unaudited; use public addresses for valuable wallets. Phrases are processed locally and cleared after import. Only derived addresses are saved and sent to indexers. The first Ethereum account (m/44'/60'/0'/0/0) is used without an extra passphrase.</span></div>
         <div id="import-status" class="import-status" role="status" aria-live="polite" hidden></div>
       </section>
-      <section class="summary-grid" aria-label="Portfolio overview">
-        <div class="balance-card"><div class="balance-top"><span>YOUR PORTFOLIO</span><span class="balance-sparkle">✳</span></div><div class="balance-label">Total known value <span title="Only assets with an available price are included.">ⓘ</span></div><div class="balance-value" id="total-value">$0.00</div><div class="balance-foot"><span class="balance-tag">↗ &nbsp; ALL WALLETS</span><span id="value-note">Add a wallet to get started</span></div><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div></div>
-        <div class="stat-card"><div class="stat-top"><span class="stat-icon purple">▤</span><span class="stat-arrow">↗</span></div><div class="stat-number" id="wallet-count">0</div><div class="stat-title">Wallets tracked</div><p>All together, at a glance</p></div>
-        <div class="stat-card"><div class="stat-top"><span class="stat-icon peach">◇</span><span class="stat-arrow">↗</span></div><div class="stat-number" id="asset-count">0</div><div class="stat-title">Assets found</div><p>Across supported networks</p></div>
-      </section>
-      <section class="scan-progress panel" id="scan-progress" hidden aria-label="Balance scan progress">
-        <div class="scan-progress-heading"><div><div class="section-kicker">BALANCE SCAN</div><strong id="progress-text">Preparing scan…</strong></div><strong id="progress-percent">0%</strong></div>
-        <progress id="progress-bar" value="0" max="100" aria-label="Network scan progress"></progress>
-        <div class="progress-detail" id="progress-detail" role="status" aria-live="polite"></div><div class="scan-errors" id="scan-errors" hidden></div><button class="retry-button" id="retry-failed" type="button" hidden>Retry failed checks</button>
-      </section>
+
       <div class="dashboard-grid">
-        <section class="panel assets-panel" id="assets"><div class="panel-header"><div><div class="section-kicker">THE BIG PICTURE</div><h2>Your assets <span class="count-badge" id="asset-badge">0</span></h2><p>Everything you hold, all in one place.</p></div><div class="asset-actions"><label class="sr-only" for="network-filter">Filter by network</label><select id="network-filter"><option value="all">All networks</option><option value="ethereum">Ethereum</option><option value="base">Base</option><option value="arbitrum">Arbitrum</option><option value="optimism">Optimism</option></select><button class="icon-button" id="refresh" title="Refresh balances" aria-label="Refresh balances">↻</button></div></div>
-          <div id="scan-status" class="scan-status" role="status" hidden></div><div class="table-wrap"><table><thead><tr><th>ASSET</th><th>NETWORK</th><th>BALANCE</th><th>VALUE</th></tr></thead><tbody id="asset-list"></tbody></table></div><div class="pager" id="asset-pager" hidden><button type="button" id="asset-prev">← Previous</button><span id="asset-page-label"></span><button type="button" id="asset-next">Next →</button></div>
-          <div class="empty-state" id="empty-state"><div class="empty-art"><span>✦</span><div>◈</div><span>✳</span></div><h3>Nothing here just yet.</h3><p>Add a wallet address and we’ll bring your<br>assets together right here.</p><button class="empty-button" data-open>＋ &nbsp; Add your first wallet</button></div>
-          <div class="panel-foot"><span><i></i> LIVE ON-CHAIN DATA</span><span>Powered by Blockscout ↗</span></div>
+        <section class="panel assets-panel" id="assets">
+          <div class="panel-header"><div><h2>Assets <span class="count-badge" id="asset-badge">0</span></h2><p>Balances across your tracked wallets.</p></div><div class="asset-actions"><label class="sr-only" for="network-filter">Filter by network</label><select id="network-filter"><option value="all">All networks</option><option value="ethereum">Ethereum</option><option value="base">Base</option><option value="arbitrum">Arbitrum</option><option value="optimism">Optimism</option></select><button class="icon-button" id="refresh" type="button" title="Refresh balances" aria-label="Refresh balances">↻</button></div></div>
+          <div id="scan-status" class="scan-status" role="status" hidden></div>
+          <div class="table-wrap"><table><thead><tr><th>Asset</th><th>Network</th><th>Balance</th><th>Value</th></tr></thead><tbody id="asset-list"></tbody></table></div>
+          <div class="pager" id="asset-pager" hidden><button type="button" id="asset-prev">← Previous</button><span id="asset-page-label"></span><button type="button" id="asset-next">Next →</button></div>
+          <div class="empty-state" id="empty-state"><div class="empty-art" aria-hidden="true">▤</div><div><h3>No assets to show</h3><p>Add a wallet address to see its indexed assets here.</p><button class="empty-button" type="button" data-open>Add your first wallet</button></div></div>
+          <div class="panel-foot"><span><i></i>Indexed on-chain data</span><span>Powered by Blockscout</span></div>
         </section>
-        <div class="right-column"><section class="panel wallets-panel" id="wallets"><div class="wallet-heading"><div><div class="section-kicker">YOUR COLLECTION</div><h2>My wallets <span class="count-badge" id="wallet-badge">0</span></h2></div><button class="small-add" data-open aria-label="Add wallet">＋</button></div><p class="wallet-desc">The addresses you’re keeping an eye on.</p><div id="wallet-list"></div><div class="pager" id="wallet-pager" hidden><button type="button" id="wallet-prev">← Previous</button><span id="wallet-page-label"></span><button type="button" id="wallet-next">Next →</button></div><div class="wallet-empty" id="wallet-empty"><div class="wallet-illustration">▤<span>✦</span></div><strong>No wallets added</strong><p>Your wallet addresses will<br>show up here.</p></div><button class="outline-button" data-open>＋ &nbsp; Add a wallet</button><button class="remove-zero-button" id="remove-zero" type="button" hidden>Remove zero-balance wallets</button><p class="zero-help" id="zero-help" hidden>Only wallets with successful scans on all four supported networks and no indexed assets are eligible.</p></section>
-        <div class="tip-card"><div class="tip-icon">✦</div><div><strong>A little peace of mind.</strong><p>This dashboard is view-only. Our experimental self-custody wallet is separate.</p><span>SAFE &amp; SIMPLE <b>↗</b></span></div></div></div>
+        <section class="panel wallets-panel" id="wallets">
+          <div class="wallet-heading"><div><h2>Wallets <span class="count-badge" id="wallet-badge">0</span></h2><p class="wallet-desc">Your tracked addresses.</p></div><button class="small-add" type="button" data-open aria-label="Add wallet">+</button></div>
+          <div id="wallet-list"></div>
+          <div class="pager" id="wallet-pager" hidden><button type="button" id="wallet-prev">← Previous</button><span id="wallet-page-label"></span><button type="button" id="wallet-next">Next →</button></div>
+          <div class="wallet-empty" id="wallet-empty"><div class="wallet-illustration" aria-hidden="true">▧</div><div><strong>No wallets added</strong><p>Addresses you add will appear here.</p></div></div>
+          <button class="outline-button" type="button" data-open>+ &nbsp; Add a wallet</button>
+          <button class="remove-zero-button" id="remove-zero" type="button" hidden>Remove zero-balance wallets</button><p class="zero-help" id="zero-help" hidden>Only wallets with successful scans on all four supported networks and no indexed assets are eligible.</p>
+        </section>
       </div>
-      <footer><span>Made for a clearer view <span class="footer-star">✳</span></span><a href="/wallet">Advanced self-custody wallet ↗</a><span>INDEPENDENT · WATCH-ONLY</span></footer>
+      <footer class="dashboard-footer"><span>Walleto is an independent, watch-only dashboard.</span><a href="/wallet">Open self-custody wallet <span aria-hidden="true">↗</span></a></footer>
     </div>
   </main>
 </div>
-</body></html>
+</body>
+</html>

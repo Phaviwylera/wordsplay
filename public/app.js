@@ -94,8 +94,8 @@ function render() {
     empty.querySelector('p').textContent = pending ? 'This may take a few moments.' : failed ? 'Try refreshing, or choose another network.' : 'Try another network or add another wallet.';
     empty.querySelector('button').hidden = true;
   } else {
-    empty.querySelector('h3').textContent = 'Nothing here just yet.';
-    empty.querySelector('p').innerHTML = 'Add a wallet address and we’ll bring your<br>assets together right here.';
+    empty.querySelector('h3').textContent = 'No assets to show';
+    empty.querySelector('p').textContent = 'Add a wallet address to see its indexed assets here.';
     empty.querySelector('button').hidden = false;
   }
   const status = $('#scan-status');
