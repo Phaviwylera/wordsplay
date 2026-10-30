@@ -1,7 +1,13 @@
 const networks = {
   ethereum: { name: 'Ethereum', short: 'ETH', color: '#627eea' }, base: { name: 'Base', short: 'B', color: '#1652f0' },
   arbitrum: { name: 'Arbitrum', short: 'A', color: '#28a0f0' }, optimism: { name: 'Optimism', short: 'OP', color: '#ff0420' },
+  bnb: { name: 'BNB Smart Chain', short: 'BNB', color: '#d39b16' }, bitcoin: { name: 'Bitcoin', short: 'BTC', color: '#f7931a' }, tron: { name: 'TRON', short: 'TRX', color: '#eb0029' },
 };
+const { classifyAddress } = window.watchAddressTools;
+const familyNetworks = { evm: ['ethereum', 'base', 'arbitrum', 'optimism', 'bnb'], bitcoin: ['bitcoin'], tron: ['tron'] };
+const keyFor = address => classifyAddress(address)?.key;
+const networksFor = address => familyNetworks[classifyAddress(address)?.family] || [];
+const nativeOnlyNetworks = new Set(['bitcoin', 'tron', 'bnb']);
 const $ = (selector) => document.querySelector(selector);
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 const shortAddress = (address) => `${address.slice(0, 6)}...${address.slice(-4)}`;
@@ -11,8 +17,8 @@ try {
   if (Array.isArray(saved)) {
     const seen = new Set();
     wallets = saved.filter(w => {
-      if (!w || typeof w.address !== 'string' || !/^0x[a-fA-F0-9]{40}$/.test(w.address)) return false;
-      const address = w.address.toLowerCase();
+      if (!w || !classifyAddress(w.address)) return false;
+      const address = keyFor(w.address);
       if (seen.has(address)) return false;
       seen.add(address); return true;
     }).map(w => ({ address: w.address }));
@@ -34,11 +40,15 @@ function persist() { try { localStorage.setItem('walleto.wallets', JSON.stringif
 function importStatus(text, error = false) { const el = $('#import-status'); el.textContent = text; el.hidden = false; el.classList.toggle('error', error); }
 function addAddresses(addresses) {
   let added = 0; let duplicates = 0;
-  const seen = new Set(wallets.map(wallet => wallet.address.toLowerCase()));
+  const seen = new Set(wallets.map(wallet => keyFor(wallet.address)));
   for (const address of addresses) {
-    const normalized = address.toLowerCase();
+    const normalized = keyFor(address);
+    if (!normalized) continue;
     if (seen.has(normalized)) { duplicates++; continue; }
-    seen.add(normalized); wallets.push({ address }); added++;
+    seen.add(normalized);
+    // Bech32 is case-insensitive; Base58 addresses (Bitcoin/TRON) are not.
+    const storedAddress = /^bc1/i.test(address) ? normalized : address;
+    wallets.push({ address: storedAddress }); added++;
   }
   const saved = !added || persist();
   if (added) scan();
@@ -53,7 +63,7 @@ function amount(raw, decimals) {
   } catch (_) { return 0; }
 }
 function money(value) { return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 }).format(value); }
-function quantity(value) { return value > 0 && value < 0.000001 ? '<0.000001' : new Intl.NumberFormat('en-US', { maximumFractionDigits: 6 }).format(value); }
+function quantity(value) { return value > 0 && value < 0.00000001 ? '<0.00000001' : new Intl.NumberFormat('en-US', { maximumFractionDigits: 8 }).format(value); }
 function updatePager(prefix, page, count) {
   const pager = $(`#${prefix}-pager`);
   pager.hidden = count <= PAGE_SIZE;
@@ -62,11 +72,12 @@ function updatePager(prefix, page, count) {
   $(`#${prefix}-next`).disabled = (page + 1) * PAGE_SIZE >= count;
 }
 function walletScanLabel(wallet) {
-  const state = walletStates.get(wallet.address.toLowerCase());
+  const state = walletStates.get(keyFor(wallet.address));
   if (!state) return { css: '', label: 'Waiting to scan' };
-  if (state.done < Object.keys(networks).length) return { css: '', label: `Scanning ${state.done}/${Object.keys(networks).length} networks` };
+  const total = networksFor(wallet.address).length;
+  if (state.done < total) return { css: '', label: `Scanning ${state.done}/${total} networks` };
   if (state.failed) return { css: 'incomplete', label: `⚠ Incomplete · ${state.failed} failed` };
-  return { css: 'complete', label: state.hasAssets ? '✓ Scanned · assets found' : '✓ Scanned · no assets found' };
+  return { css: 'complete', label: state.limited ? '✓ Scanned · native-only coverage on some networks' : state.hasAssets ? '✓ Scanned · assets found' : '✓ Scanned · no assets found' };
 }
 function render() {
   const selected = $('#network-filter').value;
@@ -122,19 +133,19 @@ function render() {
   $('#remove-zero').hidden = !wallets.length;
   $('#remove-zero').disabled = loading || eligible === 0;
   $('#zero-help').hidden = !wallets.length;
-  $('#zero-help').textContent = loading ? 'Available after all checks finish. Failed scans are never treated as zero.' : 'Only wallets with successful scans on all four supported networks and no indexed assets are eligible. Failed scans are excluded.';
+  $('#zero-help').textContent = 'Unavailable while some supported networks have native-only coverage; token and inscription balances may be missed. Failed scans are never treated as zero.';
   $('#remove-zero').textContent = `Remove zero-balance wallets (${eligible})`;
   $('#remove-all').disabled = !wallets.length;
   $('#remove-all').textContent = `Remove all wallets (${wallets.length})`;
   $('#refresh').classList.toggle('spinning', loading);
   $('#refresh').disabled = loading || !wallets.length;
 }
-function recordWalletScan(wallet, hasAssets, failed, totalNetworks) {
-  const address = wallet.address.toLowerCase();
-  const state = walletStates.get(address) || { done: 0, failed: 0, hasAssets: false };
-  state.done++; state.failed += failed ? 1 : 0; state.hasAssets ||= hasAssets;
+function recordWalletScan(wallet, hasAssets, failed, network) {
+  const address = keyFor(wallet.address);
+  const state = walletStates.get(address) || { done: 0, failed: 0, hasAssets: false, limited: false };
+  state.done++; state.failed += failed ? 1 : 0; state.hasAssets ||= hasAssets; state.limited ||= nativeOnlyNetworks.has(network);
   walletStates.set(address, state);
-  if (state.done === totalNetworks && !state.failed && !state.hasAssets) zeroWallets.add(address);
+  if (state.done === networksFor(wallet.address).length && !state.failed && !state.hasAssets && !state.limited) zeroWallets.add(address);
 }
 // Keep requests bounded for large imports. Cancel the previous scan when the
 // tracked address list changes, and never send recovery phrases to an indexer.
@@ -179,29 +190,34 @@ async function scan(retryFailed = false) {
   const directFetcher = (url, options) => scanRequest(url, options, signal, 15000);
   const version = ++scanVersion;
   const scanWallets = wallets.slice();
-  const networkKeys = Object.keys(networks);
   let retryTasks = null;
   if (retry) {
     retryTasks = [...failedChecks.values()];
     scanData.completed -= retryTasks.length;
     scanData.failed -= retryTasks.length;
     for (const { wallet } of retryTasks) {
-      const state = walletStates.get(wallet.address.toLowerCase());
+      const state = walletStates.get(keyFor(wallet.address));
       if (state) { state.done--; state.failed--; }
     }
     failedChecks.clear();
   } else {
-    scanData = { total: scanWallets.length * networkKeys.length, completed: 0, failed: 0, assets: [], knownValue: 0, unpriced: 0 };
+    scanData = { total: scanWallets.reduce((total, wallet) => total + networksFor(wallet.address).length, 0), completed: 0, failed: 0, assets: [], knownValue: 0, unpriced: 0 };
     walletStates = new Map(); zeroWallets = new Set(); failedChecks = new Map();
   }
   const taskCount = retry ? retryTasks.length : scanData.total;
   loading = taskCount > 0; render();
-  let next = 0;
+  let next = 0; let walletIndex = 0; let networkIndex = 0;
+  function nextFullTask() {
+    const wallet = scanWallets[walletIndex];
+    const keys = networksFor(wallet.address);
+    const network = keys[networkIndex++];
+    if (networkIndex === keys.length) { walletIndex++; networkIndex = 0; }
+    return { wallet, network };
+  }
   async function worker() {
     while (!signal.aborted && next < taskCount) {
       const task = next++;
-      const wallet = retry ? retryTasks[task].wallet : scanWallets[Math.floor(task / networkKeys.length)];
-      const network = retry ? retryTasks[task].network : networkKeys[task % networkKeys.length];
+      const { wallet, network } = retry ? retryTasks[task] : nextFullTask();
       const address = wallet.address;
       try {
         let data;
@@ -237,13 +253,13 @@ async function scan(retryFailed = false) {
             if (price === null) scanData.unpriced++; else scanData.knownValue += balance * price;
           }
           scanData.completed++;
-          recordWalletScan(wallet, hasAssets, false, networkKeys.length);
+          recordWalletScan(wallet, hasAssets, false, network);
         }
       } catch (error) {
         if (version === scanVersion && !signal.aborted) {
           scanData.failed++; scanData.completed++;
-          failedChecks.set(`${address.toLowerCase()}:${network}`, { wallet, network, reason: failureReason(error) });
-          recordWalletScan(wallet, false, true, networkKeys.length);
+          failedChecks.set(`${keyFor(address)}:${network}`, { wallet, network, reason: failureReason(error) });
+          recordWalletScan(wallet, false, true, network);
         }
       }
       if (version === scanVersion && !signal.aborted) scheduleRender();
@@ -263,7 +279,7 @@ $('#address-form').addEventListener('submit', event => {
   event.preventDefault();
   const field = $('#wallet-address');
   const address = field.value.trim();
-  if (!/^0x[a-fA-F0-9]{40}$/.test(address)) return importStatus('Enter a valid 0x address with 40 hexadecimal characters.', true);
+  if (!classifyAddress(address)) return importStatus('Enter a valid Bitcoin, TRON or EVM public address.', true);
   const result = addAddresses([address]);
   field.value = '';
   importStatus(result.duplicates ? 'This address is already being tracked.' : result.saved ? 'Address added. Scanning balances…' : 'Address added for this session, but browser storage is unavailable.', !result.saved);
@@ -310,7 +326,7 @@ $('#seed-form').addEventListener('submit', async event => {
 $('#wallet-list').addEventListener('click', event => {
   const button = event.target.closest('[data-address]');
   if (!button) return;
-  wallets = wallets.filter(wallet => wallet.address.toLowerCase() !== button.dataset.address.toLowerCase());
+  wallets = wallets.filter(wallet => keyFor(wallet.address) !== keyFor(button.dataset.address));
   const saved = persist(); scan();
   if (!saved) importStatus('The removal could not be saved in browser storage.', true);
 });
@@ -326,12 +342,13 @@ $('#remove-all').addEventListener('click', () => {
 $('#remove-zero').addEventListener('click', () => {
   if (loading || !zeroWallets.size) return;
   const count = zeroWallets.size;
-  if (!confirm(`Remove ${count} wallet${count === 1 ? '' : 's'} with no assets found on Ethereum, Base, Arbitrum and Optimism? This removes only the watch list entries, not the wallets or funds. Other chains and unindexed assets are not checked.`)) return;
-  wallets = wallets.filter(wallet => !zeroWallets.has(wallet.address.toLowerCase()));
+  if (!confirm(`Remove ${count} wallet${count === 1 ? '' : 's'} with no assets found on their completely scanned networks? This removes only the watch list entries, not the wallets or funds. Other chains and unindexed assets are not checked.`)) return;
+  const removedChecks = wallets.filter(wallet => zeroWallets.has(keyFor(wallet.address))).reduce((sum, wallet) => sum + networksFor(wallet.address).length, 0);
+  wallets = wallets.filter(wallet => !zeroWallets.has(keyFor(wallet.address)));
   for (const address of zeroWallets) walletStates.delete(address);
   zeroWallets.clear();
-  scanData.total -= count * Object.keys(networks).length;
-  scanData.completed -= count * Object.keys(networks).length;
+  scanData.total -= removedChecks;
+  scanData.completed -= removedChecks;
   const saved = persist(); render();
   importStatus(saved ? `Removed ${count} zero-balance wallet${count === 1 ? '' : 's'} from the watch list.` : `Removed ${count} wallet${count === 1 ? '' : 's'} for this session, but browser storage could not save the change.`, !saved);
 });

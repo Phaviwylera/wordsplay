@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#38345c">
+  <title>BIP-39 English word list — Walleto</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/wordlist.js" defer></script>
+</head>
+<body class="wordlist-page">
+  <header class="wordlist-header">
+    <a class="wordlist-brand" href="/">walleto<span>.</span></a>
+    <a class="wordlist-back" href="/">← Back to dashboard</a>
+  </header>
+  <main class="wordlist-main">
+    <div class="wordlist-intro">
+      <div><p class="wordlist-context">Reference library</p><h1>BIP-39 English word list</h1><p>The standard 2,048 words used to form English recovery phrases, in their original order.</p></div>
+      <div class="wordlist-total"><strong>2,048</strong><span>standard words</span></div>
+    </div>
+    <div class="wordlist-warning"><strong>Keep your recovery phrase private.</strong> This is a public word list, not a list of complete phrases. Search individual words only—never enter your complete recovery phrase here.</div>
+    <section class="wordlist-panel" aria-labelledby="wordlist-title">
+      <div class="wordlist-controls"><div><h2 id="wordlist-title">Browse words</h2><p>Numbers shown are 1–2,048; BIP-39 indices are 0–2,047.</p></div><div class="wordlist-search"><label for="word-search">Find a word or number</label><input id="word-search" type="search" placeholder="e.g. ability or 2" autocomplete="off" spellcheck="false"></div></div>
+      <div class="wordlist-results-bar"><span id="word-count" role="status" aria-live="polite">Loading words…</span><span>English · BIP-39</span></div>
+      <ol class="wordlist-grid" id="word-list" aria-label="BIP-39 words"></ol>
+      <p class="wordlist-empty" id="word-empty" hidden>No words match your search.</p>
+      <div class="wordlist-pager" id="word-pager" hidden><button id="word-prev" type="button">← Previous</button><span id="word-page-label"></span><button id="word-next" type="button">Next →</button></div>
+    </section>
+    <p class="wordlist-source">Source: the public English word list in <a href="https://github.com/bitcoin/bips/blob/master/bip-0039/english.txt" target="_blank" rel="noopener noreferrer">BIP-39</a>. The words are stored in this app; searching happens locally. <a href="/bip39-wordlist-LICENSE.txt">License</a>.</p>
+  </main>
+</body>
+</html>

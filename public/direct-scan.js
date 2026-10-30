@@ -1,5 +1,5 @@
-// A browser-side fallback for environments where the app server cannot reach
-// Blockscout. These are public, read-only endpoints; no wallet keys are sent.
+// Browser-side fallback when the server cannot reach the public balance
+// providers. These are read-only requests; no wallet keys are sent.
 (function (root) {
   const explorers = {
     ethereum: 'https://eth.blockscout.com',
@@ -24,6 +24,10 @@
     return value;
   }
   async function scanDirect(address, network, fetcher = fetch) {
+    if (['bitcoin', 'tron', 'bnb'].includes(network)) {
+      const scan = typeof module !== 'undefined' && module.exports ? require('../lib/native-scanner').scanNativeNetwork : root.scanNativeNetwork;
+      return scan(address, network, fetcher);
+    }
     if (!/^0x[a-fA-F0-9]{40}$/.test(address) || !Object.hasOwn(explorers, network)) throw new Error('Invalid wallet or network');
     async function get(path, timeout = 15000) {
       const response = await fetcher(`${explorers[network]}/api/v2${path}`, { signal: AbortSignal.timeout(timeout), headers: { Accept: 'application/json' } });

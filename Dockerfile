@@ -3,6 +3,7 @@ RUN apk add --no-cache bash util-linux
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
+COPY vercel.json ./
 COPY src ./src
 COPY api ./api
 COPY lib ./lib

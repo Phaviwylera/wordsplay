@@ -17,6 +17,22 @@
       "destination": "/public/direct-scan.js"
     },
     {
+      "source": "/wordlist",
+      "destination": "/public/wordlist.html"
+    },
+    {
+      "source": "/wordlist.js",
+      "destination": "/public/wordlist.js"
+    },
+    {
+      "source": "/bip39-english.txt",
+      "destination": "/public/bip39-english.txt"
+    },
+    {
+      "source": "/bip39-wordlist-LICENSE.txt",
+      "destination": "/public/bip39-wordlist-LICENSE.txt"
+    },
+    {
       "source": "/wallet",
       "destination": "/public/wallet.html"
     },
@@ -82,7 +98,7 @@
         },
         {
           "key": "Content-Security-Policy",
-          "value": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://eth.blockscout.com https://base.blockscout.com https://arbitrum.blockscout.com https://optimism.blockscout.com; object-src 'none'; base-uri 'none'; form-action 'self'"
+          "value": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://eth.blockscout.com https://base.blockscout.com https://arbitrum.blockscout.com https://optimism.blockscout.com https://mempool.space https://api.trongrid.io https://bsc-rpc.publicnode.com; object-src 'none'; base-uri 'none'; form-action 'self'"
         },
         {
           "key": "Referrer-Policy",
@@ -99,7 +115,41 @@
         },
         {
           "key": "Content-Security-Policy",
-          "value": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://eth.blockscout.com https://base.blockscout.com https://arbitrum.blockscout.com https://optimism.blockscout.com; object-src 'none'; base-uri 'none'; form-action 'self'"
+          "value": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://eth.blockscout.com https://base.blockscout.com https://arbitrum.blockscout.com https://optimism.blockscout.com https://mempool.space https://api.trongrid.io https://bsc-rpc.publicnode.com; object-src 'none'; base-uri 'none'; form-action 'self'"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "no-referrer"
+        }
+      ]
+    },
+    {
+      "source": "/wordlist",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        },
+        {
+          "key": "Content-Security-Policy",
+          "value": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "no-referrer"
+        }
+      ]
+    },
+    {
+      "source": "/public/wordlist.html",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        },
+        {
+          "key": "Content-Security-Policy",
+          "value": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'"
         },
         {
           "key": "Referrer-Policy",

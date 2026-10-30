@@ -11,13 +11,18 @@ http.createServer(async (req, res) => {
     res.json = (data) => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(data)); };
     return handler(req, res);
   }
-  const files = { '/': ['index.html', 'text/html'], '/style.css': ['style.css', 'text/css'], '/app.js': ['app.js', 'text/javascript'], '/derive-bundle.js': ['derive-bundle.js', 'text/javascript'], '/direct-scan.js': ['direct-scan.js', 'text/javascript'], '/wallet': ['wallet.html', 'text/html'], '/wallet-bundle.js': ['wallet-bundle.js', 'text/javascript'] };
+  const files = { '/': ['index.html', 'text/html'], '/style.css': ['style.css', 'text/css'], '/app.js': ['app.js', 'text/javascript'], '/derive-bundle.js': ['derive-bundle.js', 'text/javascript'], '/direct-scan.js': ['direct-scan.js', 'text/javascript'], '/wordlist': ['wordlist.html', 'text/html'], '/wordlist.js': ['wordlist.js', 'text/javascript'], '/bip39-english.txt': ['bip39-english.txt', 'text/plain'], '/bip39-wordlist-LICENSE.txt': ['bip39-wordlist-LICENSE.txt', 'text/plain'], '/wallet': ['wallet.html', 'text/html'], '/wallet-bundle.js': ['wallet-bundle.js', 'text/javascript'] };
   const file = files[url.pathname];
   if (!file) { res.writeHead(404); return res.end('Not found'); }
   const headers = { 'Content-Type': `${file[1]}; charset=utf-8` };
   if (url.pathname === '/') {
     headers['Cache-Control'] = 'no-store';
-    headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://eth.blockscout.com https://base.blockscout.com https://arbitrum.blockscout.com https://optimism.blockscout.com; object-src 'none'; base-uri 'none'; form-action 'self'";
+    headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://eth.blockscout.com https://base.blockscout.com https://arbitrum.blockscout.com https://optimism.blockscout.com https://mempool.space https://api.trongrid.io https://bsc-rpc.publicnode.com; object-src 'none'; base-uri 'none'; form-action 'self'";
+    headers['Referrer-Policy'] = 'no-referrer';
+  }
+  if (url.pathname === '/wordlist') {
+    headers['Cache-Control'] = 'no-store';
+    headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'";
     headers['Referrer-Policy'] = 'no-referrer';
   }
   if (url.pathname === '/wallet') {
