@@ -1,9 +1,11 @@
 import { Wallet, Mnemonic, sha256, getBytes } from 'ethers';
 import { createAddressTools } from '../lib/addresses';
 import { scanNativeNetwork } from '../lib/native-scanner';
+import { scanEvmNativeFallback } from '../lib/evm-fallback';
 
 window.watchAddressTools = createAddressTools(bytes => getBytes(sha256(bytes)));
 window.scanNativeNetwork = scanNativeNetwork;
+window.scanEvmNativeFallback = scanEvmNativeFallback;
 
 // 128 cryptographically random bits plus the BIP-39 checksum produce 12 words.
 // Fail closed if the browser cannot provide secure randomness.

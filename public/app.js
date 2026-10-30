@@ -111,7 +111,7 @@ function render() {
   }
   const status = $('#scan-status');
   status.hidden = !wallets.length || (!failed && !pending);
-  status.textContent = pending ? `Scanning ${pending} wallet network${pending === 1 ? '' : 's'}…` : `${failed} wallet network${failed === 1 ? '' : 's'} could not be scanned. Results are incomplete; retry the failed checks.`;
+  status.textContent = pending ? `Scanning ${pending} wallet network${pending === 1 ? '' : 's'}…` : `${failed} wallet network${failed === 1 ? '' : 's'} had incomplete or failed checks. Retry to recover missing data.`;
   const percentage = total ? Math.floor(completed * 100 / total) : 0;
   $('#scan-progress').hidden = !wallets.length;
   $('#progress-bar').value = percentage;
@@ -125,7 +125,7 @@ function render() {
     const reasons = new Set();
     for (const check of failedChecks.values()) { counts[check.network] = (counts[check.network] || 0) + 1; reasons.add(check.reason); }
     const byNetwork = Object.entries(counts).map(([network, count]) => `${networks[network].name}: ${count}`).join(' · ');
-    const explanations = { limited: 'Rate limiting detected', invalid: 'Invalid or incomplete indexer data', unavailable: 'Indexer or network unavailable' };
+    const explanations = { limited: 'Rate limiting detected', invalid: 'Invalid or incomplete indexer data', unavailable: 'Indexer or network unavailable', partial: 'Native balance only; token and NFT data unavailable' };
     errorDetails.textContent = `${byNetwork}. ${[...reasons].map(reason => explanations[reason]).join('; ')}. Failed checks are not treated as zero.`;
   }
   $('#retry-failed').hidden = loading || !failedChecks.size;
@@ -193,11 +193,18 @@ async function scan(retryFailed = false) {
   let retryTasks = null;
   if (retry) {
     retryTasks = [...failedChecks.values()];
+    // A partial native-only result may have contributed assets. Remove those
+    // before retrying so a successful retry cannot double-count them.
+    const retryKeys = new Set(retryTasks.map(({ wallet, network }) => `${keyFor(wallet.address)}:${network}`));
+    scanData.assets = scanData.assets.filter(asset => !retryKeys.has(`${keyFor(asset.wallet.address)}:${asset.network}`));
+    scanData.knownValue = scanData.assets.reduce((total, asset) => total + (asset.price === null ? 0 : asset.balance * asset.price), 0);
+    scanData.unpriced = scanData.assets.filter(asset => asset.price === null).length;
+    const walletsWithAssets = new Set(scanData.assets.map(asset => keyFor(asset.wallet.address)));
     scanData.completed -= retryTasks.length;
     scanData.failed -= retryTasks.length;
     for (const { wallet } of retryTasks) {
       const state = walletStates.get(keyFor(wallet.address));
-      if (state) { state.done--; state.failed--; }
+      if (state) { state.done--; state.failed--; state.hasAssets = walletsWithAssets.has(keyFor(wallet.address)); }
     }
     failedChecks.clear();
   } else {
@@ -228,6 +235,15 @@ async function scan(retryFailed = false) {
               if (!response.ok) throw Object.assign(new Error('Server scan failed'), { status: response.status });
               data = await response.json();
               if (!Array.isArray(data.assets)) throw new Error('Invalid response');
+              // The server may be unable to reach an indexer that the browser
+              // can access. Prefer full indexed results over a native-only RPC.
+              if (data.coverage === 'native-only' && !nativeOnlyNetworks.has(network)) {
+                try {
+                  const direct = await scanDirect(address, network, directFetcher);
+                  if (Array.isArray(direct.assets) && direct.coverage !== 'native-only') data = direct;
+                } catch (_) { /* Retain the verified server-side native balance. */ }
+                if (signal.aborted) return;
+              }
             } catch (serverError) {
               if (signal.aborted) return;
               try { data = await scanDirect(address, network, directFetcher); }
@@ -253,7 +269,12 @@ async function scan(retryFailed = false) {
             if (price === null) scanData.unpriced++; else scanData.knownValue += balance * price;
           }
           scanData.completed++;
-          recordWalletScan(wallet, hasAssets, false, network);
+          const partial = data.coverage === 'native-only' && !nativeOnlyNetworks.has(network);
+          if (partial) {
+            scanData.failed++;
+            failedChecks.set(`${keyFor(address)}:${network}`, { wallet, network, reason: 'partial' });
+          }
+          recordWalletScan(wallet, hasAssets, partial, network);
         }
       } catch (error) {
         if (version === scanVersion && !signal.aborted) {

@@ -29,24 +29,41 @@
       return scan(address, network, fetcher);
     }
     if (!/^0x[a-fA-F0-9]{40}$/.test(address) || !Object.hasOwn(explorers, network)) throw new Error('Invalid wallet or network');
-    async function get(path, timeout = 15000) {
+    async function get(path, timeout = ['arbitrum', 'optimism'].includes(network) ? 8000 : 15000) {
       const response = await fetcher(`${explorers[network]}/api/v2${path}`, { signal: AbortSignal.timeout(timeout), headers: { Accept: 'application/json' } });
       if (!response.ok) throw Object.assign(new Error(`Indexer returned ${response.status}`), { status: response.status });
       return response.json();
     }
-    const [account, tokens, stats] = await Promise.all([
-      get(`/addresses/${address}`), get(`/addresses/${address}/token-balances`), cachedStats(fetcher, network, get),
-    ]);
-    if (!Array.isArray(tokens)) throw new Error('Unexpected indexer response');
-    const assets = [{ name: 'Ether', symbol: 'ETH', type: 'native', rawBalance: rawBalance(account?.coin_balance), decimals: 18, price: stats?.coin_price ?? null }];
-    for (const item of tokens) {
-      if (!item || typeof item !== 'object') throw new Error('Invalid token balance from indexer');
-      const token = item.token || {};
-      const value = rawBalance(item.value);
-      if (BigInt(value) === 0n) continue;
-      assets.push({ name: token.name || 'Unknown token', symbol: token.symbol || 'UNKNOWN', type: token.type || 'token', rawBalance: value, decimals: Number.isInteger(Number(token.decimals)) && token.decimals !== null ? Number(token.decimals) : 0, price: token.exchange_rate ?? null, contract: token.address_hash || null, tokenId: item.token_id || null });
+    let rpcAttempted = false; let rpcResult;
+    const fallback = typeof module !== 'undefined' && module.exports ? require('../lib/evm-fallback').scanEvmNativeFallback : root.scanEvmNativeFallback;
+    try {
+      const [account, tokens, stats] = await Promise.all([
+        get(`/addresses/${address}`), get(`/addresses/${address}/token-balances`), cachedStats(fetcher, network, get),
+      ]);
+      if (!Array.isArray(tokens)) throw new Error('Unexpected indexer response');
+      let native;
+      try { native = rawBalance(account?.coin_balance); }
+      catch (error) {
+        if (!['arbitrum', 'optimism'].includes(network)) throw error;
+        rpcAttempted = true;
+        try { rpcResult = await fallback(address, network, fetcher); native = rpcResult.assets[0].rawBalance; }
+        catch (_) { throw error; }
+      }
+      const assets = [{ name: 'Ether', symbol: 'ETH', type: 'native', rawBalance: native, decimals: 18, price: stats?.coin_price ?? null }];
+      for (const item of tokens) {
+        if (!item || typeof item !== 'object') throw new Error('Invalid token balance from indexer');
+        const token = item.token || {};
+        const value = rawBalance(item.value);
+        if (BigInt(value) === 0n) continue;
+        assets.push({ name: token.name || 'Unknown token', symbol: token.symbol || 'UNKNOWN', type: token.type || 'token', rawBalance: value, decimals: Number.isInteger(Number(token.decimals)) && token.decimals !== null ? Number(token.decimals) : 0, price: token.exchange_rate ?? null, contract: token.address_hash || null, tokenId: item.token_id || null });
+      }
+      return { address, network, assets };
+    } catch (indexerError) {
+      if (!['arbitrum', 'optimism'].includes(network)) throw indexerError;
+      if (rpcAttempted) { if (rpcResult) return rpcResult; throw indexerError; }
+      try { return await fallback(address, network, fetcher); }
+      catch (_) { throw indexerError; }
     }
-    return { address, network, assets };
   }
   if (typeof module !== 'undefined' && module.exports) module.exports = { scanDirect };
   else root.scanDirect = scanDirect;

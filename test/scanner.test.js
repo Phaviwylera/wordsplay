@@ -160,3 +160,59 @@ test('scan API rejects valid addresses submitted to the wrong network', async ()
   assert.equal(result.status, 400);
   assert.match(result.body.error, /match network/);
 });
+
+test('Optimism and Arbitrum use verified RPC native balance when indexer data is missing or unavailable', async () => {
+  const { scanDirect } = require('../public/direct-scan');
+  for (const network of ['optimism', 'arbitrum']) {
+    for (const scanner of [scanWallet, scanDirect]) {
+      for (const mode of ['missing', 'unavailable', 'bad-token']) {
+        const calls = [];
+        const fetcher = async (url, options) => {
+          calls.push(url);
+          if (url.includes('-rpc.publicnode.com')) {
+            const body = JSON.parse(options.body);
+            assert.equal(body.method, 'eth_getBalance');
+            assert.deepEqual(body.params, [address, 'latest']);
+            return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: '0xde0b6b3a7640000' }) };
+          }
+          if (url.endsWith('/stats')) return { ok: true, json: async () => ({}) };
+          if (mode === 'unavailable') return { ok: false, status: 503 };
+          return { ok: true, json: async () => url.endsWith('/token-balances') ? (mode === 'bad-token' ? [{ value: null }] : []) : { coin_balance: mode === 'missing' ? null : '0' } };
+        };
+        const result = await scanner(address, network, fetcher);
+        assert.equal(result.coverage, mode === 'missing' ? undefined : 'native-only');
+        assert.equal(result.assets[0].rawBalance, '1000000000000000000');
+        assert.equal(result.assets[0].price, null);
+        assert.ok(calls.some(url => url.includes('-rpc.publicnode.com')));
+      }
+    }
+  }
+});
+
+test('L2 RPC fallback never converts failed or malformed results into a zero balance', async () => {
+  const { scanDirect } = require('../public/direct-scan');
+  for (const scanner of [scanWallet, scanDirect]) {
+    for (const bad of [{ jsonrpc: '2.0', id: 1, result: null }, { jsonrpc: '2.0', id: 2, result: '0x0' }, { jsonrpc: '2.0', id: 1, result: '0x00' }, { jsonrpc: '2.0', id: 1, error: { message: 'unavailable' }, result: '0x0' }]) {
+      const fetcher = async url => url.includes('-rpc.publicnode.com')
+        ? { ok: true, json: async () => bad }
+        : url.endsWith('/stats') ? { ok: true, json: async () => ({}) } : { ok: true, json: async () => url.endsWith('/token-balances') ? [] : { coin_balance: null } };
+      await assert.rejects(scanner(address, 'optimism', fetcher), /Invalid balance/);
+    }
+  }
+});
+
+test('missing indexed ETH balance retains valid token data after RPC recovery', async () => {
+  const { scanDirect } = require('../public/direct-scan');
+  for (const scanner of [scanWallet, scanDirect]) {
+    const fetcher = async url => ({ ok: true, json: async () => url.includes('-rpc.publicnode.com')
+      ? { jsonrpc: '2.0', id: 1, result: '0x0' }
+      : url.endsWith('/stats') ? { coin_price: '2000' }
+        : url.endsWith('/token-balances') ? [{ value: '123', token: { name: 'Token', symbol: 'TOK', decimals: '0', type: 'ERC-20' } }]
+          : { coin_balance: null } });
+    const result = await scanner(address, 'arbitrum', fetcher);
+    assert.notEqual(result.coverage, 'native-only');
+    assert.equal(result.assets[0].rawBalance, '0');
+    assert.equal(result.assets[1].rawBalance, '123');
+    assert.equal(result.assets[1].symbol, 'TOK');
+  }
+});
