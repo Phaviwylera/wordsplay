@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const { JSDOM } = require('jsdom');
 const esbuild = require('esbuild');
-const { Wallet } = require('ethers');
+const { Wallet, Mnemonic } = require('ethers');
 
 // Public test phrases; never fund these accounts.
 const phrase1 = 'test test test test test test test test test test test junk';
@@ -25,6 +25,42 @@ function setup() {
 }
 function submit(w, form) { form.dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true })); }
 const wait = () => new Promise(resolve => setTimeout(resolve, 60));
+
+test('generates a valid phrase locally and scans it only after submission', async () => {
+  const { dom, w, $, requests } = setup();
+  // Public deterministic test entropy, never use for real funds.
+  w.crypto.getRandomValues = bytes => { bytes.fill(0); return bytes; };
+  $('generate-phrase').click();
+  const phrase = $('seed-phrases').value;
+  assert.equal(phrase, phrase2);
+  assert.equal(phrase.split(' ').length, 12);
+  assert.equal(Mnemonic.isValidMnemonic(phrase), true);
+  assert.equal(requests.length, 0);
+  assert.equal(w.localStorage.getItem('walleto.wallets'), null);
+  submit(w, $('seed-form'));
+  for (let i = 0; i < 100 && (!w.localStorage.getItem('walleto.wallets') || $('refresh').disabled); i++) await wait();
+  assert.deepEqual(JSON.parse(w.localStorage.getItem('walleto.wallets')).map(item => item.address), [address2]);
+  assert.equal($('seed-phrases').value, '');
+  assert.equal(requests.length, 5);
+  assert.ok(requests.every(url => !url.includes('abandon')));
+  assert.equal(w.localStorage.getItem('walleto.wallets').includes(phrase), false);
+  assert.match($('wallet-list').textContent, /Scanned/);
+  dom.window.close();
+});
+
+test('generation appends without overwriting and fails closed if secure randomness fails', () => {
+  const { dom, w, $, requests } = setup();
+  $('seed-phrases').value = phrase1;
+  w.crypto.getRandomValues = bytes => { bytes.fill(0); return bytes; };
+  $('generate-phrase').click();
+  assert.equal($('seed-phrases').value, `${phrase1}\n${phrase2}`);
+  w.crypto.getRandomValues = () => { throw new Error('unavailable'); };
+  $('generate-phrase').click();
+  assert.equal($('seed-phrases').value, `${phrase1}\n${phrase2}`);
+  assert.match($('import-status').textContent, /secure randomness is unavailable/i);
+  assert.equal(requests.length, 0);
+  dom.window.close();
+});
 
 test('pasted phrases derive multiple addresses, reject invalid lines and deduplicate without storing secrets', async () => {
   const { dom, w, $, requests } = setup();

@@ -284,6 +284,19 @@ $('#address-form').addEventListener('submit', event => {
   field.value = '';
   importStatus(result.duplicates ? 'This address is already being tracked.' : result.saved ? 'Address added. Scanning balances…' : 'Address added for this session, but browser storage is unavailable.', !result.saved);
 });
+$('#generate-phrase').addEventListener('click', () => {
+  try {
+    const phrase = window.generateWatchPhrase();
+    const field = $('#seed-phrases');
+    // Preserve any pasted phrases; each click appends one complete phrase.
+    const existing = field.value;
+    field.value = existing + (existing && !existing.endsWith('\n') ? '\n' : '') + phrase;
+    field.focus();
+    importStatus('Generated one 12-word phrase locally. Click Add & scan to track its first EVM address. The phrase will be cleared after import.');
+  } catch (_) {
+    importStatus('Could not generate a phrase: secure randomness is unavailable. Try a trusted, up-to-date browser.', true);
+  }
+});
 $('#seed-file').addEventListener('change', () => {
   // Do not display the file name: it might itself contain sensitive information.
   $('#file-name').textContent = $('#seed-file').files.length ? 'Text file selected' : 'No file selected';

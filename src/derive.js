@@ -5,6 +5,18 @@ import { scanNativeNetwork } from '../lib/native-scanner';
 window.watchAddressTools = createAddressTools(bytes => getBytes(sha256(bytes)));
 window.scanNativeNetwork = scanNativeNetwork;
 
+// 128 cryptographically random bits plus the BIP-39 checksum produce 12 words.
+// Fail closed if the browser cannot provide secure randomness.
+window.generateWatchPhrase = function generateWatchPhrase() {
+  if (!window.crypto || typeof window.crypto.getRandomValues !== 'function') {
+    throw new Error('Secure randomness is unavailable');
+  }
+  const entropy = new Uint8Array(16);
+  window.crypto.getRandomValues(entropy);
+  try { return Mnemonic.fromEntropy(entropy).phrase; }
+  finally { entropy.fill(0); }
+};
+
 // Only derived public addresses and a limited set of invalid line numbers are
 // returned. Never persist or send a phrase or the original file contents.
 function makeParser(onProgress) {
