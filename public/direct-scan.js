@@ -29,7 +29,7 @@
       return scan(address, network, fetcher);
     }
     if (!/^0x[a-fA-F0-9]{40}$/.test(address) || !Object.hasOwn(explorers, network)) throw new Error('Invalid wallet or network');
-    async function get(path, timeout = ['arbitrum', 'optimism'].includes(network) ? 8000 : 15000) {
+    async function get(path, timeout = ['ethereum', 'arbitrum', 'optimism'].includes(network) ? 8000 : 15000) {
       const response = await fetcher(`${explorers[network]}/api/v2${path}`, { signal: AbortSignal.timeout(timeout), headers: { Accept: 'application/json' } });
       if (!response.ok) throw Object.assign(new Error(`Indexer returned ${response.status}`), { status: response.status });
       return response.json();
@@ -44,7 +44,7 @@
       let native;
       try { native = rawBalance(account?.coin_balance); }
       catch (error) {
-        if (!['arbitrum', 'optimism'].includes(network)) throw error;
+        if (!['ethereum', 'arbitrum', 'optimism'].includes(network)) throw error;
         rpcAttempted = true;
         try { rpcResult = await fallback(address, network, fetcher); native = rpcResult.assets[0].rawBalance; }
         catch (_) { throw error; }
@@ -59,7 +59,7 @@
       }
       return { address, network, assets };
     } catch (indexerError) {
-      if (!['arbitrum', 'optimism'].includes(network)) throw indexerError;
+      if (!['ethereum', 'arbitrum', 'optimism'].includes(network)) throw indexerError;
       if (rpcAttempted) { if (rpcResult) return rpcResult; throw indexerError; }
       try { return await fallback(address, network, fetcher); }
       catch (_) { throw indexerError; }

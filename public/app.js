@@ -122,11 +122,17 @@ function render() {
   errorDetails.hidden = loading || !failedChecks.size;
   if (!errorDetails.hidden) {
     const counts = {};
-    const reasons = new Set();
-    for (const check of failedChecks.values()) { counts[check.network] = (counts[check.network] || 0) + 1; reasons.add(check.reason); }
-    const byNetwork = Object.entries(counts).map(([network, count]) => `${networks[network].name}: ${count}`).join(' · ');
+    for (const check of failedChecks.values()) {
+      const reasons = counts[check.network] ||= {};
+      reasons[check.reason] = (reasons[check.reason] || 0) + 1;
+    }
     const explanations = { limited: 'Rate limiting detected', invalid: 'Invalid or incomplete indexer data', unavailable: 'Indexer or network unavailable', partial: 'Native balance only; token and NFT data unavailable' };
-    errorDetails.textContent = `${byNetwork}. ${[...reasons].map(reason => explanations[reason]).join('; ')}. Failed checks are not treated as zero.`;
+    const details = Object.entries(counts).map(([network, reasons]) => {
+      const count = Object.values(reasons).reduce((sum, value) => sum + value, 0);
+      const breakdown = Object.entries(reasons).map(([reason, number]) => `${explanations[reason]} (${number})`).join('; ');
+      return `${networks[network].name}: ${count} — ${breakdown}`;
+    }).join(' · ');
+    errorDetails.textContent = `${details}. Failed checks are not treated as zero.`;
   }
   $('#retry-failed').hidden = loading || !failedChecks.size;
   const eligible = zeroWallets.size;

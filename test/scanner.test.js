@@ -161,9 +161,9 @@ test('scan API rejects valid addresses submitted to the wrong network', async ()
   assert.match(result.body.error, /match network/);
 });
 
-test('Optimism and Arbitrum use verified RPC native balance when indexer data is missing or unavailable', async () => {
+test('Ethereum, Optimism and Arbitrum use verified RPC native balance when indexer data is missing or unavailable', async () => {
   const { scanDirect } = require('../public/direct-scan');
-  for (const network of ['optimism', 'arbitrum']) {
+  for (const network of ['ethereum', 'optimism', 'arbitrum']) {
     for (const scanner of [scanWallet, scanDirect]) {
       for (const mode of ['missing', 'unavailable', 'bad-token']) {
         const calls = [];

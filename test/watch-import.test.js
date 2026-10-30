@@ -663,3 +663,24 @@ test('native-only L2 fallback remains incomplete and retry replaces rather than 
   assert.equal($('retry-failed').hidden, true);
   dom.window.close();
 });
+
+test('scan errors show the specific reason for each network', async () => {
+  const { dom, w, $ } = setup();
+  w.scanDirect = async (_address, network) => {
+    if (network === 'ethereum') throw new Error('Invalid balance from indexer');
+    throw new Error('Unexpected network');
+  };
+  w.fetch = async url => {
+    const network = new URL(url, w.location.href).searchParams.get('network');
+    if (network === 'ethereum') return { ok: false, status: 400 };
+    if (network === 'arbitrum') return { ok: true, json: async () => ({ coverage: 'native-only', assets: [zeroNative] }) };
+    return { ok: true, json: async () => ({ assets: [zeroNative] }) };
+  };
+  $('wallet-address').value = address1; submit(w, $('address-form'));
+  for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
+  const message = $('scan-errors').textContent;
+  assert.match(message, /Ethereum: 1 — Invalid or incomplete indexer data \(1\)/);
+  assert.match(message, /Arbitrum: 1 — Native balance only; token and NFT data unavailable \(1\)/);
+  assert.match(message, /not treated as zero/);
+  dom.window.close();
+});
