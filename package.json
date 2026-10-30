@@ -8,7 +8,7 @@
     "build": "esbuild src/wallet.js --bundle --platform=browser --format=iife --outfile=public/wallet-bundle.js --minify && esbuild src/derive.js --bundle --platform=browser --format=iife --outfile=public/derive-bundle.js --minify"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.13.0"
   },
   "dependencies": {
     "ethers": "^6.17.0"

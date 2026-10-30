@@ -33,7 +33,16 @@ wait_healthy() {
   return 1
 }
 start_app() {
-  docker run -d --name "$APP_NAME" --restart unless-stopped -p 127.0.0.1:3000:3000 "$1" >/dev/null || return 1
+  local -a background_args=()
+  # Opt in only after the operator has removed public proxy access and is using
+  # an SSH tunnel. Host/Origin checks alone are not a network security boundary.
+  if [[ -f "$STATE_DIR/background-enabled" ]]; then
+    mkdir -p "$STATE_DIR/background-jobs"
+    chown 1000:1000 "$STATE_DIR/background-jobs"
+    chmod 700 "$STATE_DIR/background-jobs"
+    background_args=(-e WALLETO_BACKGROUND_DIR=/var/lib/walleto-jobs -v "$STATE_DIR/background-jobs:/var/lib/walleto-jobs")
+  fi
+  docker run -d --name "$APP_NAME" --restart unless-stopped -p 127.0.0.1:3000:3000 "${background_args[@]}" "$1" >/dev/null || return 1
   wait_healthy "$APP_NAME"
 }
 cleanup_candidate() { docker rm -f "$CANDIDATE_NAME" >/dev/null 2>&1 || true; }

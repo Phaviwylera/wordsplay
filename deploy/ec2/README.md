@@ -51,6 +51,25 @@ Keep that terminal open, then open **http://127.0.0.1:8080/** in a browser on th
 
 This doesn't make the app audited or protect against a compromised browser, extension or server. **Use only public wallet addresses; do not import valuable seed phrases.** A public website with HTTPS needs a separate public TLS setup; opening the EC2 IP over HTTP is not a safe substitute. The automatic deployment timer works the same way with or without a domain.
 
+## Optional: enable overnight .txt processing privately
+
+**Do not enable this while a current browser scan is running.** Restarting or updating the app can interrupt it. Once it finishes, first remove public access to the dashboard and API: close inbound HTTP/HTTPS and port 3000 in the EC2 security group and firewall, and disable any public reverse proxy that exposes this app. Allow SSH only from your own IP. Verify from outside that the app/API cannot be reached publicly, then use the SSH tunnel in section 3A. The worker has no independent account authentication for job creation. Its localhost Host/Origin checks can be spoofed and are not a substitute for private networking. Never use it on a publicly exposed service.
+
+The file contains recovery phrases. It is transferred through SSH, temporarily encrypted on EC2 with the key on the same EC2 volume, and processed in server memory. Administrators, a compromised EC2 server, disk snapshots and backups can expose the phrases or encryption keys. Deletion does not guarantee secure erasure. This app is experimental and unaudited: do not use phrases protecting valuable funds. Public-address tracking is safer.
+
+After the current scan finishes and private access is confirmed, opt in and redeploy the current `main`:
+
+```sh
+sudo touch /var/lib/walleto/background-enabled
+sudo rm -f /var/lib/walleto/deployed.sha
+sudo systemctl start walleto-deploy.service
+sudo journalctl -u walleto-deploy.service -n 100 --no-pager
+```
+
+This restarts the application. The update script mounts `/var/lib/walleto/background-jobs` into the app, where acknowledged jobs and results persist across container restarts. A stopped EC2 instance does not scan. Disk space, network access and provider availability are still required. Open the dashboard through the SSH tunnel, choose a UTF-8 `.txt` file and click **Scan .txt overnight**. Keep the laptop on until **upload confirmed**; after that EC2 processes it without the browser. Reopen the same browser and SSH URL to see results. Clearing browser storage loses the job access token. Results appear in a separate panel, not in the normal dashboard watch list. Failed or partial checks remain incomplete and can be retried.
+
+To disable background imports, remove the flag and redeploy after active jobs have finished. Existing job files remain on disk until an operator removes them; snapshots and backups may retain copies. Do not remove the volume during an active job.
+
 ## 3B. Optional: enable public HTTPS with a domain
 
 Install Caddy first with `sudo apt install -y caddy`. Replace `wallet.example.com` below with your actual DNS name. Do not leave the example domain in the config. On the instance:

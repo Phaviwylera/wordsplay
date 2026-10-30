@@ -13,6 +13,10 @@
       "destination": "/public/app.js"
     },
     {
+      "source": "/background.js",
+      "destination": "/public/background.js"
+    },
+    {
       "source": "/direct-scan.js",
       "destination": "/public/direct-scan.js"
     },
