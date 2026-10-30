@@ -124,7 +124,7 @@ function render() {
   $('#zero-help').hidden = !wallets.length;
   $('#zero-help').textContent = loading ? 'Available after all checks finish. Failed scans are never treated as zero.' : 'Only wallets with successful scans on all four supported networks and no indexed assets are eligible. Failed scans are excluded.';
   $('#remove-zero').textContent = `Remove zero-balance wallets (${eligible})`;
-  $('#remove-all').hidden = !wallets.length;
+  $('#remove-all').disabled = !wallets.length;
   $('#remove-all').textContent = `Remove all wallets (${wallets.length})`;
   $('#refresh').classList.toggle('spinning', loading);
   $('#refresh').disabled = loading || !wallets.length;
