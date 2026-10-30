@@ -39,6 +39,13 @@ test('background endpoints require SSH-style loopback host, same origin and a jo
     const { id, token } = result.body;
     assert.equal((await request(port, 'GET', `/api/background/jobs/${id}`, { host })).status, 404);
     assert.equal((await request(port, 'GET', `/api/background/jobs/${id}`, { host, authorization: `Bearer ${token}` })).status, 200);
+    const matches = await request(port, 'GET', `/api/background/jobs/${id}/matches`, { host, authorization: `Bearer ${token}` });
+    assert.equal(matches.status, 200);
+    assert.deepEqual(matches.body.matches, []);
+    assert.equal(matches.body.enabled, true);
+    assert.equal(typeof matches.body.retained, 'boolean');
+    const phrase = await request(port, 'GET', `/api/background/jobs/${id}/phrase?address=0x123`, { host, authorization: `Bearer ${token}` });
+    assert.equal(phrase.status, 404);
   } finally {
     child.kill('SIGTERM'); await new Promise(resolve => child.once('exit', resolve));
     fs.rmSync(dir, { recursive: true, force: true });
