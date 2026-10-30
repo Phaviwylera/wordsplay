@@ -83,6 +83,10 @@ h1,h2,h3,p{margin:0}
 .quick-form textarea{display:block;min-height:58px;resize:vertical;line-height:1.45}
 .quick-form input:focus,.quick-form textarea:focus{border-color:#8178b3;box-shadow:0 0 0 3px #eae7f7}
 .quick-form input::placeholder,.quick-form textarea::placeholder{color:#9996a5}
+.generate-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-top:8px}
+.quick-form .generate-button{border-color:#d8d5e5;background:#f9f8fc;color:#514984;font-size:11px;padding:0 10px}
+.quick-form .generate-button:hover{background:#eeeaf8;border-color:#bcb3db}
+.generate-actions span{color:#777584;font-size:11px}
 .seed-actions{display:flex;align-items:center;gap:9px;margin-top:8px;min-width:0}
 .seed-actions input[type=file]{position:absolute;width:1px;height:1px;opacity:0}
 .file-button{display:inline-flex;align-items:center;justify-content:center;min-height:38px;padding:0 10px;border:1px solid #d8d5e5;background:#f9f8fc;color:#514984;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap}
