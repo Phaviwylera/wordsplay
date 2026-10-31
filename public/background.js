@@ -18,6 +18,7 @@
     if (!response.ok) throw new Error('Could not load the EC2 job. Check the SSH tunnel and try again.');
     return response.json();
   }
+  const number = value => Number(value || 0).toLocaleString('en-US');
   function formatAsset(asset) {
     try {
       const decimals = Math.max(0, Math.min(100, Number(asset.decimals) || 0));
@@ -32,7 +33,7 @@
   function renderMatches(data, status, incomplete) {
     const container = $('background-matches');
     container.replaceChildren();
-    $('background-match-count').textContent = String(data.total || 0);
+    $('background-match-count').textContent = number(data.total);
     $('background-match-note').textContent = !data.enabled
       ? 'This job was uploaded before phrase matching was enabled, so EC2 has no saved phrases for it. Let it finish if it is still scanning; then delete this job in the panel and upload the .txt file again with the current app to link phrases to addresses.'
       : data.retained
@@ -121,7 +122,7 @@
     $('background-match-prev').disabled = matchOffset === 0;
     $('background-match-next').disabled = matchOffset + MATCH_PAGE_SIZE >= data.total;
     $('background-match-page-label').textContent = data.total
-      ? `${matchOffset + 1}–${Math.min(matchOffset + MATCH_PAGE_SIZE, data.total)} of ${data.total}`
+      ? `${number(matchOffset + 1)}–${number(Math.min(matchOffset + MATCH_PAGE_SIZE, data.total))} of ${number(data.total)}`
       : '0 matches';
   }
 
@@ -134,7 +135,7 @@
       show(message);
       $('background-percent').textContent = `${percent}%`;
       $('background-progress').value = percent;
-      $('background-detail').textContent = `${storageWarning ? 'Browser storage failed: keep this page open or access to this job may be lost. ' : ''}${['importing', 'scanning'].includes(data.status) ? 'Upload confirmed; EC2 continues while your laptop is off. ' : ''}${data.wallets} addresses · ${data.lines} lines processed · ${data.invalid} invalid · ${data.completed}/${data.total} checks · ${data.incomplete} incomplete${data.error ? ` · ${data.error}` : ''}. Results are stored on EC2. Incomplete checks are not zero balances.`;
+      $('background-detail').textContent = `${storageWarning ? 'Browser storage failed: keep this page open or access to this job may be lost. ' : ''}${['importing', 'scanning'].includes(data.status) ? 'Upload confirmed; EC2 continues while your laptop is off. ' : ''}${number(data.wallets)} addresses · ${number(data.lines)} lines processed · ${number(data.invalid)} invalid · ${number(data.completed)}/${number(data.total)} checks · ${number(data.incomplete)} incomplete${data.error ? ` · ${data.error}` : ''}. Results are stored on EC2. Incomplete checks are not zero balances.`;
       $('background-retry').hidden = data.status !== 'finished' || !data.incomplete;
       $('background-remove').hidden = !['finished', 'failed'].includes(data.status);
       const matchData = await request(`/matches?offset=${matchOffset}`);
@@ -150,7 +151,7 @@
       $('background-pager').hidden = data.total <= PAGE_SIZE;
       $('background-prev').disabled = offset === 0;
       $('background-next').disabled = offset + PAGE_SIZE >= data.total;
-      $('background-page-label').textContent = `${Math.min(offset + 1, data.total)}–${Math.min(offset + PAGE_SIZE, data.total)} of ${data.total}`;
+      $('background-page-label').textContent = `${number(Math.min(offset + 1, data.total))}–${number(Math.min(offset + PAGE_SIZE, data.total))} of ${number(data.total)}`;
       clearTimeout(timer);
       if (!['finished', 'failed'].includes(data.status)) timer = setTimeout(refresh, 3000);
     } catch (error) { show(error.message); clearTimeout(timer); timer = setTimeout(refresh, 10000); }

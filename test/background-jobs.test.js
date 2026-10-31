@@ -133,6 +133,11 @@ test('existing jobs migrate safely and are marked as lacking phrase mappings', (
     assert.equal(status.phraseMatching, false);
     assert.equal(status.retainsPhrases, false);
     assert.equal(jobs.matches(id, token).enabled, false);
+    const migratedDb = new DatabaseSync(path.join(dir, 'jobs.sqlite'));
+    assert.ok(migratedDb.prepare('PRAGMA index_list(checks)').all().some(index => index.name === 'checks_pending_idx'));
+    const plan = migratedDb.prepare("EXPLAIN QUERY PLAN SELECT address,network FROM checks WHERE job = ? AND status = 'pending' LIMIT 1").all(id);
+    assert.match(JSON.stringify(plan), /checks_pending_idx/);
+    migratedDb.close();
   } finally { jobs.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
