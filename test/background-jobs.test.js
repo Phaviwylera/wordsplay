@@ -5,7 +5,10 @@ const os = require('node:os');
 const path = require('node:path');
 const { Readable } = require('node:stream');
 const { spawn } = require('node:child_process');
+const crypto = require('node:crypto');
+const { DatabaseSync } = require('node:sqlite');
 const { createBackgroundJobs } = require('../lib/background-jobs');
+const { Wallet } = require('ethers');
 
 // Public test phrase. Never fund this account.
 const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
@@ -24,7 +27,7 @@ test('background jobs process a file, authenticate access and retain results', a
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-jobs-'));
   const jobs = createBackgroundJobs(dir, { scan: fakeScan });
   try {
-    const { id, token } = await jobs.receive(Readable.from(`${phrase}\n${phrase}\ninvalid\n`));
+    const { id, token } = await jobs.receive(Readable.from(`${phrase}\n${phrase}\ninvalid\n`), { retainPhrases: true });
     assert.equal(jobs.status(id, '0'.repeat(64)), null);
     const status = await finished(jobs, id, token);
     assert.equal(status.status, 'finished');
@@ -36,6 +39,12 @@ test('background jobs process a file, authenticate access and retain results', a
     const result = jobs.results(id, token);
     assert.equal(result.checks.length, 5);
     assert.ok(result.checks.every(check => check.status === 'done'));
+    assert.equal(status.retainsPhrases, true);
+    const matches = jobs.matches(id, token);
+    assert.equal(matches.total, 1);
+    assert.equal(matches.matches[0].phrase, undefined); // Reveal is an explicit separate request.
+    assert.equal(jobs.phrase(id, token, result.checks[0].address), phrase);
+    assert.equal(jobs.phrase(id, '0'.repeat(64), result.checks[0].address), null);
     assert.equal(fs.existsSync(path.join(dir, `${id}.upload`)), false);
     for (const file of fs.readdirSync(dir)) assert.equal(fs.readFileSync(path.join(dir, file)).includes(Buffer.from(phrase)), false);
     assert.equal(jobs.remove(id, token), true);
@@ -59,6 +68,71 @@ test('failed and partial checks remain incomplete and can be retried', async () 
     retry = true;
     assert.equal(jobs.retry(id, token), true);
     assert.equal((await finished(jobs, id, token)).incomplete, 0);
+  } finally { jobs.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('complete zero-balance scans discard every retained phrase', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-zero-'));
+  const jobs = createBackgroundJobs(dir, { scan: async (_address, network) => ({
+    assets: [{ type: 'native', symbol: network === 'bnb' ? 'BNB' : 'ETH', rawBalance: '0', decimals: 18, price: null }],
+  }) });
+  try {
+    const { id, token } = await jobs.receive(Readable.from(phrase), { retainPhrases: true });
+    const status = await finished(jobs, id, token);
+    assert.equal(status.incomplete, 0);
+    assert.equal(status.retainsPhrases, false);
+    assert.equal(jobs.matches(id, token).total, 0);
+    assert.equal(jobs.phrase(id, token, Wallet.fromPhrase(phrase).address), null);
+  } finally { jobs.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('retained phrases stay available across incomplete retries and are pruned when unmatched', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-matches-'));
+  const positiveAddress = Wallet.fromPhrase(phrase).address;
+  const zeroPhrase = 'legal winner thank year wave sausage worth useful legal winner thank yellow';
+  const zeroAddress = Wallet.fromPhrase(zeroPhrase).address;
+  let retry = false;
+  const jobs = createBackgroundJobs(dir, { scan: async (address, network) => {
+    if (address === positiveAddress && network === 'ethereum' && !retry) throw new Error('offline');
+    const balance = address === positiveAddress && network === 'ethereum' && retry ? '1' : '0';
+    return { assets: [{ type: 'native', symbol: network === 'bnb' ? 'BNB' : 'ETH', rawBalance: balance, decimals: 18, price: null }] };
+  } });
+  try {
+    const { id, token } = await jobs.receive(Readable.from(`${phrase}\n${zeroPhrase}`), { retainPhrases: true });
+    const first = await finished(jobs, id, token);
+    assert.equal(first.incomplete, 1);
+    assert.equal(first.retainsPhrases, true);
+    assert.equal(jobs.matches(id, token).total, 0);
+    assert.equal(jobs.phrase(id, token, positiveAddress), null);
+
+    retry = true;
+    assert.equal(jobs.retry(id, token), true);
+    const final = await finished(jobs, id, token);
+    assert.equal(final.incomplete, 0);
+    const matches = jobs.matches(id, token);
+    assert.equal(matches.total, 1);
+    assert.equal(matches.matches[0].address, positiveAddress);
+    assert.equal(jobs.phrase(id, token, positiveAddress), phrase);
+    assert.equal(jobs.phrase(id, token, zeroAddress), null);
+  } finally { jobs.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('existing jobs migrate safely and are marked as lacking phrase mappings', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-migrate-'));
+  const id = 'a'.repeat(64);
+  const token = 'b'.repeat(64);
+  const db = new DatabaseSync(path.join(dir, 'jobs.sqlite'));
+  db.exec(`CREATE TABLE jobs (id TEXT PRIMARY KEY, token_hash TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, key TEXT, iv TEXT, tag TEXT, lines INTEGER NOT NULL DEFAULT 0, invalid INTEGER NOT NULL DEFAULT 0, error TEXT);
+    CREATE TABLE wallets (job TEXT NOT NULL, address TEXT NOT NULL, PRIMARY KEY(job,address));
+    CREATE TABLE checks (job TEXT NOT NULL, address TEXT NOT NULL, network TEXT NOT NULL, status TEXT NOT NULL, assets TEXT, reason TEXT, PRIMARY KEY(job,address,network));`);
+  db.prepare(`INSERT INTO jobs (id,token_hash,status,created_at) VALUES (?,?,'finished',?)`).run(id, crypto.createHash('sha256').update(token).digest('hex'), new Date().toISOString());
+  db.close();
+  const jobs = createBackgroundJobs(dir, { scan: fakeScan });
+  try {
+    const status = jobs.status(id, token);
+    assert.equal(status.phraseMatching, false);
+    assert.equal(status.retainsPhrases, false);
+    assert.equal(jobs.matches(id, token).enabled, false);
   } finally { jobs.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

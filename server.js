@@ -21,10 +21,10 @@ const server = http.createServer(async (req, res) => {
     const send = (code, body) => { res.statusCode = code; res.end(JSON.stringify(body)); };
     try {
     if (!jobs || !privateBackgroundRequest(req)) return send(403, { error: 'Overnight import requires a private SSH tunnel and EC2 configuration.' });
-    const match = url.pathname.match(/^\/api\/background\/jobs\/([a-f0-9]{64})(?:\/(results|retry))?$/);
+    const match = url.pathname.match(/^\/api\/background\/jobs\/([a-f0-9]{64})(?:\/(results|matches|phrase|retry))?$/);
     if (req.method === 'POST' && url.pathname === '/api/background/jobs') {
       if (req.headers.origin !== `http://${req.headers.host}` || req.headers['content-type'] !== 'application/octet-stream') return send(403, { error: 'Invalid upload origin.' });
-      try { const result = await jobs.receive(req); return send(202, result); }
+      try { const result = await jobs.receive(req, { retainPhrases: true }); return send(202, result); }
       catch (_) { if (!res.destroyed) return send(500, { error: 'Upload did not complete. Try again while connected.' }); return; }
     }
     if (!match) return send(404, { error: 'Not found.' });
@@ -33,6 +33,11 @@ const server = http.createServer(async (req, res) => {
     if (!jobs.status(id, token)) return send(404, { error: 'Job not found.' });
     if (req.method === 'GET' && !action) return send(200, jobs.status(id, token));
     if (req.method === 'GET' && action === 'results') return send(200, jobs.results(id, token, url.searchParams.get('offset')));
+    if (req.method === 'GET' && action === 'matches') return send(200, jobs.matches(id, token, url.searchParams.get('offset')));
+    if (req.method === 'GET' && action === 'phrase') {
+      const phrase = jobs.phrase(id, token, url.searchParams.get('address'));
+      return phrase ? send(200, { phrase }) : send(404, { error: 'No retained phrase for a positive-balance wallet.' });
+    }
     if (req.method === 'POST' && action === 'retry' && req.headers.origin === `http://${req.headers.host}`) {
       return jobs.retry(id, token) ? send(202, { ok: true }) : send(409, { error: 'Job cannot be retried yet.' });
     }

@@ -188,3 +188,14 @@ td:last-child,th:last-child{text-align:right}
 .background-actions{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
 .background-actions button{border:1px solid #d8d5e5;border-radius:6px;background:#f9f8fc;color:#514984;padding:8px 10px;font-size:11px;font-weight:700}
 #background-results td{max-width:360px;overflow-wrap:anywhere}
+.background-match-section{margin:18px 0 22px;padding:16px;background:#fff;border:1px solid #e7e5ed;border-radius:8px}
+.background-match-heading{display:flex;justify-content:space-between;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:11px}
+.background-match-heading h3{font-size:14px;color:#343148}.background-match-heading h3 span{display:inline-grid;place-items:center;min-width:22px;height:22px;margin-left:5px;padding:0 5px;border-radius:11px;background:#f0eef8;color:#514984;font-size:11px}
+.background-match-heading p,.background-match-empty{margin:0;color:#777484;font-size:11px;line-height:1.5}
+.background-matches{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.background-match-card{min-width:0;padding:13px;border:1px solid #e8e6ee;border-radius:7px;background:#fcfcfd}
+.background-match-address{display:grid;gap:5px}.background-match-address span,.background-match-phrase-block>span{color:#858293;font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase}.background-match-address code{color:#343148;font-size:11px;overflow-wrap:anywhere}
+.background-match-balances{display:grid;gap:5px;margin:11px 0}.background-match-balances p{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin:0;font-size:11px;color:#454257}.background-match-balances strong{text-transform:capitalize}.background-match-balances small{color:#8d6c31;font-size:10px}
+.background-match-phrase-block{display:grid;gap:7px;padding-top:10px;border-top:1px solid #eae8ef}.background-match-phrase{min-height:36px;padding:9px 10px;border-radius:5px;background:#f1eff7;color:#514984;font-size:11px;line-height:1.55;overflow-wrap:anywhere;user-select:text}
+.background-reveal-button{justify-self:start;border:1px solid #d8d5e5;border-radius:5px;background:#fff;color:#514984;padding:7px 10px;font-size:10px;font-weight:700}.background-reveal-button:disabled{opacity:.6}
+@media(max-width:650px){.background-match-section{padding:12px}.background-matches{grid-template-columns:1fr}.background-match-card{padding:12px}}
