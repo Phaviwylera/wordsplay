@@ -20,8 +20,8 @@ const server = http.createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     const send = (code, body) => { res.statusCode = code; res.end(JSON.stringify(body)); };
     try {
-    if (!jobs || !privateBackgroundRequest(req)) return send(403, { error: 'Overnight import requires a private SSH tunnel and EC2 configuration.' });
-    const match = url.pathname.match(/^\/api\/background\/jobs\/([a-f0-9]{64})(?:\/(results|matches|phrase|retry))?$/);
+    if (!jobs || !privateBackgroundRequest(req)) return send(403, { error: 'File import requires a private SSH tunnel and EC2 worker configuration.' });
+    const match = url.pathname.match(/^\/api\/background\/jobs\/([a-f0-9]{64})(?:\/(results|dashboard|matches|phrase|retry))?$/);
     if (req.method === 'POST' && url.pathname === '/api/background/jobs') {
       if (req.headers.origin !== `http://${req.headers.host}` || req.headers['content-type'] !== 'application/octet-stream') return send(403, { error: 'Invalid upload origin.' });
       try { const result = await jobs.receive(req, { retainPhrases: true }); return send(202, result); }
@@ -30,9 +30,12 @@ const server = http.createServer(async (req, res) => {
     if (!match) return send(404, { error: 'Not found.' });
     const [, id, action] = match;
     const token = (req.headers.authorization || '').replace(/^Bearer /, '');
-    if (!jobs.status(id, token)) return send(404, { error: 'Job not found.' });
+    if (!jobs.authorized(id, token)) return send(404, { error: 'Job not found.' });
     if (req.method === 'GET' && !action) return send(200, jobs.status(id, token));
     if (req.method === 'GET' && action === 'results') return send(200, jobs.results(id, token, url.searchParams.get('offset')));
+    if (req.method === 'GET' && action === 'dashboard') return send(200, jobs.dashboard(id, token, {
+      assetOffset: url.searchParams.get('assetOffset'), walletOffset: url.searchParams.get('walletOffset'), network: url.searchParams.get('network') || 'all',
+    }));
     if (req.method === 'GET' && action === 'matches') return send(200, jobs.matches(id, token, url.searchParams.get('offset')));
     if (req.method === 'GET' && action === 'phrase') {
       const phrase = jobs.phrase(id, token, url.searchParams.get('address'));

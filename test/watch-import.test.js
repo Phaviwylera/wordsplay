@@ -80,10 +80,9 @@ test('pasted phrases derive multiple addresses, reject invalid lines and dedupli
   dom.window.close();
 });
 
-test('extracts labeled phrases from a local text file and scans both addresses', async () => {
+test('extracts labeled pasted phrases and scans both addresses', async () => {
   const { dom, w, $, requests } = setup();
-  const file = new w.File([`Wallet 1: ${phrase1}\n2. ${phrase2}`], 'wallets.txt', { type: 'text/plain' });
-  Object.defineProperty($('seed-file'), 'files', { configurable: true, value: [file] });
+  $('seed-phrases').value = `Wallet 1: ${phrase1}\n2. ${phrase2}`;
   submit(w, $('seed-form'));
   for (let i = 0; i < 40 && !w.localStorage.getItem('walleto.wallets'); i++) await wait();
   assert.deepEqual(JSON.parse(w.localStorage.getItem('walleto.wallets')).map(item => item.address), [address1, address2]);
@@ -106,11 +105,10 @@ test('address input validates, avoids duplicates and uses the address as the lab
   dom.window.close();
 });
 
-test('imports a plain two-line text file with one 12-word phrase per line', async () => {
+test('imports pasted Windows line endings with one 12-word phrase per line', async () => {
   const { dom, w, $, requests } = setup();
   // These are public test mnemonics, not user-supplied phrases.
-  const file = new w.File([`${phrase1}\r\n${phrase2}\r\n`], 'wallets.txt', { type: 'text/plain' });
-  Object.defineProperty($('seed-file'), 'files', { configurable: true, value: [file] });
+  $('seed-phrases').value = `${phrase1}\r\n${phrase2}\r\n`;
   submit(w, $('seed-form'));
   for (let i = 0; i < 40 && !w.localStorage.getItem('walleto.wallets'); i++) await wait();
   const stored = w.localStorage.getItem('walleto.wallets');
@@ -123,7 +121,7 @@ test('imports a plain two-line text file with one 12-word phrase per line', asyn
   dom.window.close();
 });
 
-test('imports more than 50 distinct phrases from a text file and bounds scan concurrency', { timeout: 60000 }, async () => {
+test('imports more than 50 pasted phrases and bounds foreground scan concurrency', { timeout: 60000 }, async () => {
   const { Mnemonic } = require('ethers');
   const phrases = Array.from({ length: 55 }, (_, index) => {
     // Deterministic public test entropy. Never use these wallets for funds.
@@ -138,8 +136,7 @@ test('imports more than 50 distinct phrases from a text file and bounds scan con
     active--;
     return { ok: true, json: async () => ({ assets: [zeroNative] }) };
   };
-  const file = new w.File([`${phrases.join('\n')}\n${phrases[0]}\ninvalid`], 'many.txt', { type: 'text/plain' });
-  Object.defineProperty($('seed-file'), 'files', { configurable: true, value: [file] });
+  $('seed-phrases').value = `${phrases.join('\n')}\n${phrases[0]}\ninvalid`;
   submit(w, $('seed-form'));
   for (let i = 0; i < 500 && !w.localStorage.getItem('walleto.wallets'); i++) await wait();
   const stored = w.localStorage.getItem('walleto.wallets');
@@ -154,19 +151,6 @@ test('imports more than 50 distinct phrases from a text file and bounds scan con
   assert.equal(requests.length, 55 * 5);
   assert.ok(maxActive <= 8, `at most eight simultaneous scans, observed ${maxActive}`);
   assert.ok(requests.every(url => !phrases.some(phrase => url.includes(phrase))));
-  dom.window.close();
-});
-
-test('accepts a file larger than the old 25 MiB limit without uploading its contents', { timeout: 60000 }, async () => {
-  const { dom, w, $, requests } = setup();
-  const file = new w.File(['x'.repeat(25 * 1024 * 1024 + 1)], 'large.txt', { type: 'text/plain' });
-  Object.defineProperty($('seed-file'), 'files', { configurable: true, value: [file] });
-  submit(w, $('seed-form'));
-  for (let i = 0; i < 500 && $('seed-form').querySelector('button[type="submit"]').disabled; i++) await wait();
-  assert.match($('import-status').textContent, /invalid line 1/);
-  assert.doesNotMatch($('import-status').textContent, /25 MiB/);
-  assert.equal(w.localStorage.getItem('walleto.wallets'), null);
-  assert.equal(requests.length, 0);
   dom.window.close();
 });
 
@@ -187,20 +171,6 @@ test('cancels in-flight scans when a tracked wallet is removed', async () => {
   assert.equal(requests.length, 5);
   assert.equal(JSON.parse(w.localStorage.getItem('walleto.wallets')).length, 0);
   assert.equal($('refresh').disabled, true);
-  dom.window.close();
-});
-
-test('accepts and processes a text file exactly 25 MiB', { timeout: 60000 }, async () => {
-  const { dom, w, $, requests } = setup();
-  const prefix = `${phrase1}\n`;
-  const file = new w.File([prefix, ' '.repeat(25 * 1024 * 1024 - prefix.length)], 'large.txt', { type: 'text/plain' });
-  assert.equal(file.size, 25 * 1024 * 1024);
-  Object.defineProperty($('seed-file'), 'files', { configurable: true, value: [file] });
-  submit(w, $('seed-form'));
-  for (let i = 0; i < 500 && !w.localStorage.getItem('walleto.wallets'); i++) await wait();
-  assert.deepEqual(JSON.parse(w.localStorage.getItem('walleto.wallets')).map(item => item.address), [address1]);
-  assert.match($('import-status').textContent, /1 wallet added/);
-  assert.equal(requests.length, 5);
   dom.window.close();
 });
 
@@ -366,12 +336,11 @@ test('deduplicates saved addresses before scanning or bulk removal', async () =>
   dom.window.close();
 });
 
-test('imports phrases across UTF-8 chunk boundaries without leaking input', { timeout: 60000 }, async () => {
+test('imports pasted phrases across chunk boundaries without leaking input', { timeout: 60000 }, async () => {
   const { dom, w, $, requests } = setup();
-  // Start the phrase near the end of a chunk and split a multi-byte label.
+  // Start the phrase near the end of a chunk and include a multi-byte label.
   const prefix = ' '.repeat(65529);
-  const file = new w.File([`${prefix}${phrase1}\r\n${' '.repeat(65530)}ウォレット: ${phrase2}`], 'large.txt', { type: 'text/plain' });
-  Object.defineProperty($('seed-file'), 'files', { configurable: true, value: [file] });
+  $('seed-phrases').value = `${prefix}${phrase1}\r\n${' '.repeat(65530)}ウォレット: ${phrase2}`;
   submit(w, $('seed-form'));
   for (let i = 0; i < 200 && !w.localStorage.getItem('walleto.wallets'); i++) await wait();
   assert.deepEqual(JSON.parse(w.localStorage.getItem('walleto.wallets')).map(item => item.address), [address1, address2]);
@@ -389,18 +358,6 @@ test('accepts pasted text beyond the former 256 KiB limit', { timeout: 60000 }, 
   assert.deepEqual(JSON.parse(w.localStorage.getItem('walleto.wallets')).map(item => item.address), [address1]);
   assert.match($('import-status').textContent, /1 wallet added/);
   assert.equal(requests.length, 5);
-  dom.window.close();
-});
-
-test('rejects invalid UTF-8 file locally rather than importing partial results', async () => {
-  const { dom, w, $, requests } = setup();
-  const file = new w.File([phrase1, new Uint8Array([0xff])], 'bad.txt', { type: 'text/plain' });
-  Object.defineProperty($('seed-file'), 'files', { configurable: true, value: [file] });
-  submit(w, $('seed-form'));
-  for (let i = 0; i < 100 && $('seed-form').querySelector('button[type="submit"]').disabled; i++) await wait();
-  assert.match($('import-status').textContent, /Could not read or process/);
-  assert.equal(w.localStorage.getItem('walleto.wallets'), null);
-  assert.equal(requests.length, 0);
   dom.window.close();
 });
 
