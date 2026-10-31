@@ -8,8 +8,8 @@
   <link rel="stylesheet" href="/style.css">
   <script src="/derive-bundle.js" defer></script>
   <script src="/direct-scan.js" defer></script>
-  <script src="/app.js" defer></script>
   <script src="/background.js" defer></script>
+  <script src="/app.js" defer></script>
 </head>
 <body>
 <div class="app-shell">
@@ -24,7 +24,7 @@
       <a class="nav-item" href="/wordlist"><span class="nav-icon" aria-hidden="true">▦</span> BIP-39 words</a>
     </nav>
     <div class="sidebar-bottom">
-      <div class="sidebar-note"><span class="sidebar-note-icon" aria-hidden="true">↗</span><strong>Watching, not holding</strong><p>Addresses are tracked on this browser. Your assets stay in your wallets.</p></div>
+      <div class="sidebar-note"><span class="sidebar-note-icon" aria-hidden="true">↗</span><strong>Watching, not holding</strong><p>Your assets stay in your wallets; file scan results remain on EC2.</p></div>
       <a class="sidebar-wallet-link" href="/wallet">Self-custody wallet <span aria-hidden="true">↗</span></a>
     </div>
   </aside>
@@ -39,11 +39,11 @@
       </div>
     </header>
     <div class="content">
-      <div class="heading"><div><div class="heading-context">Your workspace <span aria-hidden="true">/</span> Portfolio</div><h1>Portfolio overview</h1><p>All your tracked wallets, in one place.</p></div><div class="date-pill">As of <span id="today"></span></div></div>
+      <div class="heading"><div><div class="heading-context">Your workspace <span aria-hidden="true">/</span> Portfolio</div><h1>Portfolio overview</h1><p>All your tracked wallets, in one place.</p></div><div class="heading-side"><label for="portfolio-source">Portfolio view</label><select id="portfolio-source"><option value="watch">Tracked addresses</option><option value="file:new">Uploaded file</option></select><div class="date-pill">As of <span id="today"></span></div></div></div>
 
       <section class="summary-grid" aria-label="Portfolio overview">
         <div class="balance-card"><div class="balance-top"><span>Total known value</span><span class="balance-currency">USD</span></div><div class="balance-value" id="total-value">$0.00</div><div class="balance-foot"><span class="balance-indicator" aria-hidden="true"></span><span id="value-note">Add a wallet to get started</span></div></div>
-        <div class="stat-card"><div class="stat-label">Wallets tracked <span class="stat-icon" aria-hidden="true">▧</span></div><div class="stat-number" id="wallet-count">0</div><p>Public addresses in your list</p></div>
+        <div class="stat-card"><div class="stat-label">Wallets tracked <span class="stat-icon" aria-hidden="true">▧</span></div><div class="stat-number" id="wallet-count">0</div><p>Public addresses in this view</p></div>
         <div class="stat-card"><div class="stat-label">Assets found <span class="stat-icon" aria-hidden="true">▤</span></div><div class="stat-number" id="asset-count">0</div><p>Across supported networks</p></div>
       </section>
 
@@ -51,37 +51,33 @@
         <div class="scan-progress-heading"><div><span class="section-kicker">Balance scan</span><strong id="progress-text">Preparing scan…</strong></div><strong id="progress-percent">0%</strong></div>
         <progress id="progress-bar" value="0" max="100" aria-label="Network scan progress"></progress>
         <div class="progress-detail" id="progress-detail" role="status" aria-live="polite"></div>
-        <div class="scan-errors" id="scan-errors" hidden></div><button class="retry-button" id="retry-failed" type="button" hidden>Retry failed checks</button>
-      </section>
-
-      <section class="scan-progress panel" id="background-panel" hidden aria-label="Overnight scan">
-        <div class="scan-progress-heading"><div><span class="section-kicker">EC2 background scan</span><strong id="background-status" role="status">Waiting…</strong></div><strong id="background-percent">0%</strong></div>
-        <progress id="background-progress" value="0" max="100" aria-label="Overnight scan progress"></progress>
-        <p class="background-note" id="background-detail"></p>
-        <div class="background-actions"><button type="button" id="background-retry" hidden>Retry incomplete checks</button><button type="button" id="background-remove" hidden>Delete job &amp; phrases</button></div>
-        <section class="background-match-section" aria-labelledby="background-match-title">
-          <div class="background-match-heading"><h3 id="background-match-title">Wallets with detected balances <span id="background-match-count">0</span></h3><p id="background-match-note">Matching phrases are hidden until you reveal them.</p></div>
-          <div id="background-matches" class="background-matches" aria-live="polite"></div>
-          <div class="pager" id="background-match-pager" hidden><button type="button" id="background-match-prev">← Previous</button><span id="background-match-page-label"></span><button type="button" id="background-match-next">Next →</button></div>
-        </section>
-        <div class="table-wrap"><table><thead><tr><th>Address</th><th>Network</th><th>Status</th><th>Assets</th></tr></thead><tbody id="background-results"></tbody></table></div>
-        <div class="pager" id="background-pager" hidden><button type="button" id="background-prev">← Previous</button><span id="background-page-label"></span><button type="button" id="background-next">Next →</button></div>
+        <div class="scan-errors" id="scan-errors" hidden></div><div class="progress-actions"><button class="retry-button" id="retry-failed" type="button" hidden>Retry failed checks</button><button class="retry-button file-delete" id="file-remove" type="button" hidden>Delete file results &amp; phrases</button></div>
       </section>
 
       <section class="quick-import panel" id="import-wallets" aria-labelledby="import-title">
-        <div class="quick-import-heading"><div><h2 id="import-title">Add wallets</h2><p>Track a public address or import multiple wallets locally.</p></div><span class="watch-badge"><span aria-hidden="true">◉</span> Watch-only</span></div>
+        <div class="quick-import-heading"><div><h2 id="import-title">Add wallets</h2><p>Track a public address, paste phrases locally, or upload a file for server processing.</p></div><span class="watch-badge"><span aria-hidden="true">◉</span> Watch-only</span></div>
         <div class="quick-import-grid">
           <form id="address-form" class="quick-form address-form"><div class="form-heading"><label for="wallet-address">Public address</label><span>Recommended</span></div><p>Track a Bitcoin, TRON or EVM address without sharing its keys.</p><div class="address-entry"><input id="wallet-address" placeholder="Bitcoin, TRON or 0x address" autocomplete="off" spellcheck="false" required><div class="address-actions"><span>Public address only</span><button type="submit">Add address</button></div></div><p class="file-help">EVM addresses also scan BNB Smart Chain.</p></form>
-          <form id="seed-form" class="quick-form seed-form"><div class="form-heading"><label for="seed-phrases">Seed phrases</label><span>Processed locally</span></div><p>One complete English BIP-39 phrase per line; derives the first EVM account only. <a class="wordlist-inline-link" href="/wordlist">View the word list</a>.</p><div class="seed-entry"><textarea id="seed-phrases" placeholder="Paste seed phrases here, one per line" rows="2" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea><div class="generate-actions"><button id="generate-phrase" class="generate-button" type="button">Generate 12-word phrase</button><span>Creates one phrase locally; review before scanning.</span></div><div class="seed-actions"><label class="file-button" for="seed-file">Choose .txt file</label><input id="seed-file" type="file" accept=".txt,text/plain"><span id="file-name">No file selected</span><button type="submit">Add &amp; scan</button></div><div class="generate-actions"><button id="background-start" class="generate-button" type="button">Scan .txt overnight</button><span>Requires private SSH tunnel to EC2.</span></div></div><p class="file-help">No fixed file-size or phrase-count limit. Large imports depend on browser and network capacity.</p></form>
+          <form id="seed-form" class="quick-form seed-form">
+            <div class="form-heading"><label for="seed-phrases">Seed phrases</label><span>Pasted text: local</span></div>
+            <p>Paste one English BIP-39 phrase per line. The first EVM account is derived locally. <a class="wordlist-inline-link" href="/wordlist">View the word list</a>.</p>
+            <div class="seed-entry">
+              <textarea id="seed-phrases" placeholder="Paste seed phrases here, one per line" rows="2" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
+              <div class="generate-actions"><button id="generate-phrase" class="generate-button" type="button">Generate 12-word phrase</button><span>Creates one phrase locally; review before scanning.</span></div>
+              <div class="seed-actions"><button type="submit">Add pasted phrases</button></div>
+              <div class="file-import"><strong>Upload a .txt file to EC2</strong><p>Choosing a file starts an upload after confirmation. Files are processed and scanned only on the server, never in this browser.</p><div class="file-import-actions"><label class="file-button" for="seed-file">Choose .txt file</label><input id="seed-file" type="file" accept=".txt,text/plain"><span>Private SSH tunnel required</span></div><p>Keep this laptop on until the upload is confirmed. EC2 continues afterward while the laptop is off. Upload the next file after confirmation; switch jobs in Portfolio view.</p></div>
+            </div>
+            <p class="file-help phrase-retention-note">Pasted phrases stay only in this tab’s memory for export until you reload, leave, or remove the wallet. They are not sent to balance providers.</p>
+          </form>
         </div>
         <div class="coverage-notice">Bitcoin (BTC), TRON (TRX), and BNB Smart Chain (BNB) show native balances only, without USD prices. Tokens, NFTs and Bitcoin inscriptions are not scanned. Bitcoin is one address, not the entire wallet. If an Ethereum, Optimism or Arbitrum indexer fails, an RPC may return the ETH balance only; missing token and NFT data remains an incomplete check.</div>
-        <div class="seed-notice"><strong>Security note</strong><span>A seed phrase gives full control of your funds. Never share it; enter it only on a site and device you trust. This app is experimental and unaudited; do not use generated phrases for valuable funds, and use public addresses to track valuable wallets. Normal imports are processed locally and cleared after import; only derived addresses are saved and sent to indexers. Overnight .txt import sends the file to EC2 and requires a private SSH tunnel. To show a phrase beside each positive-balance address, EC2 temporarily retains encrypted copies while scanning, then keeps phrases only for wallets with detected positive balances. The encryption key is stored on the same EC2 volume; administrators, a compromised server, snapshots or backups may expose phrases, and deleting a job is not guaranteed secure erasure. Do not upload phrases protecting valuable funds. Seed imports derive only the first EVM account (m/44'/60'/0'/0/0), not Bitcoin or TRON addresses.</span></div>
+        <div class="seed-notice"><strong>Security note</strong><span>A seed phrase gives full control of your funds. Never share it; enter it only on a site and device you trust. This app is experimental and unaudited; do not use phrases protecting valuable funds. Pasted phrases are processed locally; only public addresses are sent to balance providers. A selected .txt file is sent to EC2 through a private SSH tunnel and processed there. EC2 temporarily retains encrypted phrases while scanning and keeps matches with detected balances; the encryption key is stored on the same EC2 volume. Administrators, a compromised server, snapshots or backups may expose phrases; deleting a job is not guaranteed secure erasure. Files derive only the first EVM account (m/44'/60'/0'/0/0), not Bitcoin or TRON addresses.</span></div>
         <div id="import-status" class="import-status" role="status" aria-live="polite" hidden></div>
       </section>
 
       <div class="dashboard-grid">
         <section class="panel assets-panel" id="assets">
-          <div class="panel-header"><div><h2>Assets <span class="count-badge" id="asset-badge">0</span></h2><p>Balances across your tracked wallets.</p></div><div class="asset-actions"><label class="sr-only" for="network-filter">Filter by network</label><select id="network-filter"><option value="all">All networks</option><option value="ethereum">Ethereum</option><option value="base">Base</option><option value="arbitrum">Arbitrum</option><option value="optimism">Optimism</option><option value="bnb">BNB Smart Chain</option><option value="bitcoin">Bitcoin</option><option value="tron">TRON</option></select><button class="icon-button" id="refresh" type="button" title="Refresh balances" aria-label="Refresh balances">↻</button></div></div>
+          <div class="panel-header"><div><h2>Assets <span class="count-badge" id="asset-badge">0</span></h2><p id="asset-description">Balances across your tracked wallets. Select an asset to export its wallet.</p></div><div class="asset-actions"><label class="sr-only" for="network-filter">Filter by network</label><select id="network-filter"><option value="all">All networks</option><option value="ethereum">Ethereum</option><option value="base">Base</option><option value="arbitrum">Arbitrum</option><option value="optimism">Optimism</option><option value="bnb">BNB Smart Chain</option><option value="bitcoin">Bitcoin</option><option value="tron">TRON</option></select><button class="icon-button" id="refresh" type="button" title="Refresh balances" aria-label="Refresh balances">↻</button></div></div>
           <div id="scan-status" class="scan-status" role="status" hidden></div>
           <div class="table-wrap"><table><thead><tr><th>Asset</th><th>Network</th><th>Balance</th><th>Value</th></tr></thead><tbody id="asset-list"></tbody></table></div>
           <div class="pager" id="asset-pager" hidden><button type="button" id="asset-prev">← Previous</button><span id="asset-page-label"></span><button type="button" id="asset-next">Next →</button></div>
@@ -89,7 +85,7 @@
           <div class="panel-foot"><span><i></i>On-chain provider data</span><span>Blockscout, mempool.space, TronGrid & PublicNode</span></div>
         </section>
         <section class="panel wallets-panel" id="wallets">
-          <div class="wallet-heading"><div><h2>Wallets <span class="count-badge" id="wallet-badge">0</span></h2><p class="wallet-desc">Your tracked addresses.</p></div><button class="small-add" type="button" data-open aria-label="Add wallet">+</button></div>
+          <div class="wallet-heading"><div><h2>Wallets <span class="count-badge" id="wallet-badge">0</span></h2><p class="wallet-desc" id="wallet-description">Your tracked addresses.</p></div><button class="small-add" type="button" data-open aria-label="Add wallet">+</button></div>
           <div id="wallet-list"></div>
           <div class="pager" id="wallet-pager" hidden><button type="button" id="wallet-prev">← Previous</button><span id="wallet-page-label"></span><button type="button" id="wallet-next">Next →</button></div>
           <div class="wallet-empty" id="wallet-empty"><div class="wallet-illustration" aria-hidden="true">▧</div><div><strong>No wallets added</strong><p>Addresses you add will appear here.</p></div></div>
@@ -101,5 +97,27 @@
     </div>
   </main>
 </div>
+<dialog id="asset-export-dialog" class="asset-export-dialog" aria-labelledby="asset-export-title" aria-describedby="asset-export-description">
+  <div class="asset-export-heading">
+    <div><span class="section-kicker">Wallet details</span><h2 id="asset-export-title">Export wallet</h2></div>
+    <button type="button" id="asset-export-close" class="asset-export-close" aria-label="Close export options">×</button>
+  </div>
+  <p id="asset-export-description" class="asset-export-description"></p>
+  <div class="asset-export-field"><span>Wallet address</span><code id="asset-export-address"></code></div>
+  <div id="asset-export-phrase-block" class="asset-export-phrase-block" hidden>
+    <div class="asset-export-field"><span>Recovery phrase</span><code id="asset-export-phrase"></code></div>
+    <button type="button" id="asset-export-reveal" class="asset-export-reveal" aria-controls="asset-export-phrase" aria-expanded="false">Reveal phrase</button>
+    <p class="asset-export-warning"><strong>Private and unencrypted:</strong> the exported text file contains your recovery phrase. Anyone with it can control your funds. Store it securely and never share it.</p>
+  </div>
+  <p id="asset-export-note" class="asset-export-note"></p>
+  <form id="asset-export-unlock" class="asset-export-unlock" hidden>
+    <p><strong>Matching self-custody wallet found.</strong> Unlock it on this device to include its recovery phrase. Until then, only the public address is exported.</p>
+    <label for="asset-export-password">Wallet password</label>
+    <div><input id="asset-export-password" type="password" autocomplete="current-password" required><button id="asset-export-unlock-button" type="submit">Unlock phrase</button></div>
+    <p id="asset-export-unlock-status" role="status" hidden></p>
+  </form>
+  <p id="asset-export-status" class="asset-export-status" role="status" hidden></p>
+  <div class="asset-export-actions"><button type="button" id="asset-export-download" class="asset-export-download">Export</button><button type="button" id="asset-export-cancel" class="asset-export-cancel">Close</button></div>
+</dialog>
 </body>
 </html>

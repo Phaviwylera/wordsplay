@@ -19,9 +19,21 @@ window.generateWatchPhrase = function generateWatchPhrase() {
   finally { entropy.fill(0); }
 };
 
-// Only derived public addresses and a limited set of invalid line numbers are
-// returned. Never persist or send a phrase or the original file contents.
-function makeParser(onProgress) {
+// Explicitly unlock a matching self-custody keystore for export. Decryption,
+// verification, and the returned phrase stay on the device; nothing is sent.
+window.unlockCustodyRecoveryPhrase = async function unlockCustodyRecoveryPhrase(json, password) {
+  const account = await Wallet.fromEncryptedJson(json, password);
+  const phrase = account.mnemonic?.phrase;
+  if (!phrase || !Mnemonic.isValidMnemonic(phrase) || Wallet.fromPhrase(phrase).address.toLowerCase() !== account.address.toLowerCase()) {
+    throw new Error('Recovery phrase unavailable');
+  }
+  return { address: account.address, phrase };
+};
+
+// Only public addresses and limited invalid-line details are returned. An
+// optional callback can retain validated phrases in the current tab for
+// export; the parser itself never persists or sends them.
+function makeParser(onProgress, onPhrase) {
   const addresses = [];
   const invalid = [];
   let invalidCount = 0;
@@ -45,7 +57,9 @@ function makeParser(onProgress) {
         invalidCount++;
         if (invalid.length < 20) invalid.push(lineNumber);
       } else {
-        addresses.push(Wallet.fromPhrase(phrase).address);
+        const address = Wallet.fromPhrase(phrase).address;
+        addresses.push(address);
+        if (onPhrase) onPhrase(address, phrase);
       }
     }
     carry = '';
@@ -72,38 +86,15 @@ function makeParser(onProgress) {
   };
 }
 
-window.deriveWatchAddresses = async function deriveWatchAddresses(text, onProgress = () => {}) {
+window.deriveWatchAddresses = async function deriveWatchAddresses(text, onProgress = () => {}, onPhrase) {
   if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
-  const parser = makeParser(onProgress);
+  const parser = makeParser(onProgress, onPhrase);
   // Slice pasted text as well, so a very long line does not need another huge copy.
   const chunkSize = 64 * 1024;
   for (let start = 0; start < text.length; start += chunkSize) {
     const end = Math.min(start + chunkSize, text.length);
     await parser.feed(text.slice(start, end), start, text.length, end === text.length);
     onProgress(end, text.length);
-  }
-  return parser.result();
-};
-
-function readChunk(blob) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error('Could not read file'));
-    reader.onabort = () => reject(new Error('File read interrupted'));
-    reader.readAsArrayBuffer(blob);
-  });
-}
-window.deriveWatchFile = async function deriveWatchFile(file, onProgress = () => {}) {
-  const parser = makeParser(onProgress);
-  const decoder = new TextDecoder('utf-8', { fatal: true });
-  const chunkSize = 64 * 1024;
-  for (let start = 0; start < file.size; start += chunkSize) {
-    const end = Math.min(start + chunkSize, file.size);
-    const chunk = await readChunk(file.slice(start, end));
-    const text = decoder.decode(chunk, { stream: end < file.size });
-    await parser.feed(text, start, file.size, end === file.size);
-    onProgress(end, file.size);
   }
   return parser.result();
 };
