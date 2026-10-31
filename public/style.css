@@ -61,6 +61,7 @@ h1,h2,h3,p{margin:0}
 .balance-currency{font-size:10px;font-weight:700;letter-spacing:.05em;color:#77708e;border:1px solid #ccc7df;border-radius:4px;padding:3px 6px}
 .balance-value{font-size:34px;line-height:1.1;font-weight:700;letter-spacing:-1.4px;font-variant-numeric:tabular-nums;margin:11px 0 9px;color:#302b50}
 .balance-foot{display:flex;align-items:center;color:#68627e;font-size:11px;min-width:0}
+.balance-rate{margin-top:5px;color:#77708a;font-size:10px}
 .balance-indicator{background:#7b70b0;flex:none}
 .stat-card{border-left:1px solid var(--line)}
 .stat-icon{display:grid;place-items:center;height:26px;width:26px;border-radius:6px;color:#756da0;background:#f1eff8;font-size:16px}

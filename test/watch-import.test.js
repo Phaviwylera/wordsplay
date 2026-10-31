@@ -11,6 +11,10 @@ const phrase2 = 'abandon abandon abandon abandon abandon abandon abandon abandon
 const address1 = Wallet.fromPhrase(phrase1).address;
 const address2 = Wallet.fromPhrase(phrase2).address;
 const zeroNative = { name: 'Ether', symbol: 'ETH', type: 'native', rawBalance: '0', decimals: 18, price: null };
+const zeroBusd = { name: 'Binance-Peg BUSD', symbol: 'BUSD', type: 'BEP-20', contract: '0xe9e7cea3dedca5984780bafc599bd69add087d56', rawBalance: '0', decimals: 18, price: null };
+const completeResult = (network, assets) => network === 'bnb' ? { coverage: 'bnb-and-busd', assets: [...assets, zeroBusd] } : { assets };
+const networkOf = url => new URL(url, 'https://wallet.example').searchParams.get('network');
+const setPricing = w => { w.pricing = { snapshot: () => ({ data: { currency: 'INR', usdToInr: 83, prices: {} }, loading: false }), refresh: () => {} }; };
 const bundle = esbuild.buildSync({ entryPoints: ['src/derive.js'], bundle: true, platform: 'browser', format: 'iife', write: false }).outputFiles[0].text;
 function setup() {
   const dom = new JSDOM(fs.readFileSync('public/index.html', 'utf8'), { url: 'https://wallet.example/', runScripts: 'outside-only' });
@@ -18,8 +22,8 @@ function setup() {
   const requests = [];
   w.AbortSignal = global.AbortSignal;
   w.TextDecoder = global.TextDecoder;
-  w.fetch = async url => { requests.push(url); return { ok: true, json: async () => ({ assets: [zeroNative] }) }; };
-  w.eval(bundle);
+  w.fetch = async url => { requests.push(url); return { ok: true, json: async () => completeResult(networkOf(url), [zeroNative]) }; };
+  w.eval(bundle); setPricing(w);
   w.eval(fs.readFileSync('public/app.js', 'utf8'));
   return { dom, w, requests, $: id => w.document.getElementById(id) };
 }
@@ -134,7 +138,7 @@ test('imports more than 50 pasted phrases and bounds foreground scan concurrency
     requests.push(url); active++; maxActive = Math.max(active, maxActive);
     await new Promise(resolve => setTimeout(resolve, 2));
     active--;
-    return { ok: true, json: async () => ({ assets: [zeroNative] }) };
+    return { ok: true, json: async () => completeResult(networkOf(url), [zeroNative]) };
   };
   $('seed-phrases').value = `${phrases.join('\n')}\n${phrases[0]}\ninvalid`;
   submit(w, $('seed-form'));
@@ -149,7 +153,7 @@ test('imports more than 50 pasted phrases and bounds foreground scan concurrency
   for (let i = 0; i < 200 && $('refresh').disabled; i++) await wait();
   assert.equal($('refresh').disabled, false, 'all network scans finished');
   assert.equal(requests.length, 55 * 5);
-  assert.ok(maxActive <= 8, `at most eight simultaneous scans, observed ${maxActive}`);
+  assert.ok(maxActive <= 15, `at most fifteen simultaneous scans, observed ${maxActive}`);
   assert.ok(requests.every(url => !phrases.some(phrase => url.includes(phrase))));
   dom.window.close();
 });
@@ -190,8 +194,8 @@ test('paginates large wallet lists without dropping entries', async () => {
   const w = dom.window;
   const wallets = Array.from({ length: 105 }, (_, i) => ({ address: `0x${(i + 1).toString(16).padStart(40, '0')}` }));
   w.localStorage.setItem('walleto.wallets', JSON.stringify(wallets));
-  w.fetch = async () => ({ ok: true, json: async () => ({ assets: [zeroNative] }) });
-  w.eval(bundle); w.eval(fs.readFileSync('public/app.js', 'utf8'));
+  w.fetch = async url => ({ ok: true, json: async () => completeResult(networkOf(url), [zeroNative]) });
+  w.eval(bundle); setPricing(w); w.eval(fs.readFileSync('public/app.js', 'utf8'));
   const $ = id => w.document.getElementById(id);
   assert.equal($('wallet-list').querySelectorAll('.wallet-row').length, 100);
   assert.match($('wallet-page-label').textContent, /1–100 of 105/);
@@ -207,11 +211,12 @@ test('calculates balances and paginates assets while scans complete', async () =
   const w = dom.window;
   w.localStorage.setItem('walleto.wallets', JSON.stringify([{ address: address1 }]));
   const asset = { name: 'Ether', symbol: 'ETH', type: 'native', rawBalance: '1000000000000000000', decimals: 18, price: '2' };
-  w.fetch = async url => ({ ok: true, json: async () => ({ assets: url.includes('network=bnb') ? [zeroNative] : Array(26).fill(asset) }) });
-  w.eval(bundle); w.eval(fs.readFileSync('public/app.js', 'utf8'));
+  const many = [asset, ...Array.from({ length: 25 }, (_, index) => ({ ...asset, type: 'ERC-20', contract: `0x${index.toString(16).padStart(40, '0')}` }))];
+  w.fetch = async url => ({ ok: true, json: async () => completeResult(networkOf(url), url.includes('network=bnb') ? [zeroNative] : many) });
+  w.eval(bundle); setPricing(w); w.eval(fs.readFileSync('public/app.js', 'utf8'));
   const $ = id => w.document.getElementById(id);
   for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
-  assert.equal($('total-value').textContent, '$208.00');
+  assert.equal($('total-value').textContent, '₹17,264.00');
   assert.equal($('asset-count').textContent, '104');
   assert.equal($('asset-list').querySelectorAll('tr').length, 100);
   $('asset-next').click();
@@ -245,18 +250,18 @@ test('shows network progress and ticks only successfully scanned wallets', async
   w.localStorage.setItem('walleto.wallets', JSON.stringify([{ address: address1 }, { address: address2 }]));
   const pending = [];
   w.fetch = url => new Promise(resolve => pending.push({ url, resolve }));
-  w.eval(bundle); w.eval(fs.readFileSync('public/app.js', 'utf8'));
+  w.eval(bundle); setPricing(w); w.eval(fs.readFileSync('public/app.js', 'utf8'));
   const $ = id => w.document.getElementById(id);
-  assert.equal(pending.length, 8);
+  assert.equal(pending.length, 10);
   assert.equal($('progress-percent').textContent, '0%');
-  for (const req of pending.filter(item => item.url.includes(address1))) req.resolve({ ok: true, json: async () => ({ assets: [zeroNative] }) });
+  for (const req of pending.filter(item => item.url.includes(address1))) req.resolve({ ok: true, json: async () => completeResult(networkOf(req.url), [zeroNative]) });
   await new Promise(resolve => setTimeout(resolve, 220));
   assert.equal($('progress-percent').textContent, '50%');
   assert.equal($('progress-bar').value, 50);
   assert.match($('wallet-list').children[0].textContent, /✓ Scanned/);
   assert.doesNotMatch($('wallet-list').children[1].textContent, /✓ Scanned/);
   assert.equal($('remove-zero').disabled, true);
-  for (const req of pending.filter(item => item.url.includes(address2))) req.resolve({ ok: true, json: async () => ({ assets: [zeroNative] }) });
+  for (const req of pending.filter(item => item.url.includes(address2))) req.resolve({ ok: true, json: async () => completeResult(networkOf(req.url), [zeroNative]) });
   for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
   assert.equal($('progress-percent').textContent, '100%');
   assert.match($('remove-zero').textContent, /\(0\)/);
@@ -285,7 +290,7 @@ test('bulk removal excludes incomplete native-only coverage and failed or positi
     return { ok: true, json: async () => ({ assets }) };
   };
   w.scanDirect = async () => { throw new Error('Indexer unavailable'); };
-  w.eval(bundle); w.eval(fs.readFileSync('public/app.js', 'utf8'));
+  w.eval(bundle); setPricing(w); w.eval(fs.readFileSync('public/app.js', 'utf8'));
   const $ = id => w.document.getElementById(id);
   for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
   assert.equal($('progress-percent').textContent, '100%');
@@ -293,7 +298,7 @@ test('bulk removal excludes incomplete native-only coverage and failed or positi
   assert.match($('wallet-list').children[3].textContent, /Incomplete/);
   assert.match($('wallet-list').children[4].textContent, /Incomplete/);
   assert.match($('remove-zero').textContent, /\(0\)/);
-  assert.match($('zero-help').textContent, /native-only coverage/);
+  assert.match($('zero-help').textContent, /limited token coverage/);
   const scannedRequests = requests.length;
   $('remove-zero').click();
   assert.deepEqual(JSON.parse(w.localStorage.getItem('walleto.wallets')).map(item => item.address), wallets.map(item => item.address));
@@ -307,8 +312,8 @@ test('bulk removal remains unavailable with native-only coverage', async () => {
   const w = dom.window;
   w.localStorage.setItem('walleto.wallets', JSON.stringify([{ address: address1 }]));
   w.confirm = () => false;
-  w.fetch = async () => ({ ok: true, json: async () => ({ assets: [zeroNative] }) });
-  w.eval(bundle); w.eval(fs.readFileSync('public/app.js', 'utf8'));
+  w.fetch = async url => ({ ok: true, json: async () => completeResult(networkOf(url), [zeroNative]) });
+  w.eval(bundle); setPricing(w); w.eval(fs.readFileSync('public/app.js', 'utf8'));
   const $ = id => w.document.getElementById(id);
   for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
   $('remove-zero').click();
@@ -323,8 +328,8 @@ test('deduplicates saved addresses before scanning or bulk removal', async () =>
   w.localStorage.setItem('walleto.wallets', JSON.stringify([{ address: address1 }, { address: address1.toLowerCase() }]));
   let calls = 0;
   w.confirm = () => true;
-  w.fetch = async () => { calls++; return { ok: true, json: async () => ({ assets: [zeroNative] }) }; };
-  w.eval(bundle); w.eval(fs.readFileSync('public/app.js', 'utf8'));
+  w.fetch = async url => { calls++; return { ok: true, json: async () => completeResult(networkOf(url), [zeroNative]) }; };
+  w.eval(bundle); setPricing(w); w.eval(fs.readFileSync('public/app.js', 'utf8'));
   const $ = id => w.document.getElementById(id);
   for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
   assert.equal(calls, 5);
@@ -384,9 +389,9 @@ test('remove all clears every page and cancels an ongoing scan without accepting
   w.fetch = (url, options) => new Promise(resolve => requests.push({ url, signal: options.signal, resolve }));
   let confirmation;
   w.confirm = message => { confirmation = message; return true; };
-  w.eval(bundle); w.eval(fs.readFileSync('public/app.js', 'utf8'));
+  w.eval(bundle); setPricing(w); w.eval(fs.readFileSync('public/app.js', 'utf8'));
   const $ = id => w.document.getElementById(id);
-  assert.equal(requests.length, 8);
+  assert.equal(requests.length, 15);
   assert.equal($('remove-all').hidden, false);
   assert.equal($('remove-all').disabled, false);
   assert.match($('remove-all').textContent, /105/);
@@ -405,10 +410,10 @@ test('remove all clears every page and cancels an ongoing scan without accepting
   const asset = { ...zeroNative, rawBalance: '1000000000000000000', price: '100' };
   for (const request of requests) request.resolve({ ok: true, json: async () => ({ assets: [asset] }) });
   await wait();
-  assert.equal(requests.length, 8, 'queued requests never start');
+  assert.equal(requests.length, 15, 'queued requests never start');
   assert.equal($('wallet-count').textContent, '0');
   assert.equal($('asset-count').textContent, '0');
-  assert.equal($('total-value').textContent, '$0.00');
+  assert.equal($('total-value').textContent, '₹0.00');
   dom.window.close();
 });
 
@@ -452,23 +457,23 @@ test('retry failed checks preserves successful balances and retries only failure
     const params = new URL(url, 'https://wallet.example').searchParams;
     requests.push({ address: params.get('address'), network: params.get('network') });
     if (fail && params.get('address') === address1 && params.get('network') === 'base') return { ok: false, status: 400 };
-    return { ok: true, json: async () => ({ assets: [params.get('network') !== 'bnb' && params.get('address') === address2 ? { ...zeroNative, rawBalance: '1000000000000000000', price: '2' } : zeroNative] }) };
+    return { ok: true, json: async () => completeResult(params.get('network'), [params.get('network') !== 'bnb' && params.get('address') === address2 ? { ...zeroNative, rawBalance: '1000000000000000000', price: '2' } : zeroNative]) };
   };
   w.scanDirect = async () => { throw new Error('Indexer unavailable'); };
-  w.eval(bundle); w.eval(fs.readFileSync('public/app.js', 'utf8'));
+  w.eval(bundle); setPricing(w); w.eval(fs.readFileSync('public/app.js', 'utf8'));
   const $ = id => w.document.getElementById(id);
   for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
   assert.equal(requests.length, 10);
   assert.match($('scan-errors').textContent, /Base: 1.*unavailable.*not treated as zero/i);
   assert.equal($('retry-failed').hidden, false);
-  assert.equal($('total-value').textContent, '$8.00');
+  assert.equal($('total-value').textContent, '₹664.00');
   assert.match($('remove-zero').textContent, /\(0\)/);
   fail = false;
   $('retry-failed').click();
   for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
   assert.equal(requests.length, 11);
   assert.deepEqual(requests[10], { address: address1, network: 'base' });
-  assert.equal($('total-value').textContent, '$8.00');
+  assert.equal($('total-value').textContent, '₹664.00');
   assert.equal($('progress-percent').textContent, '100%');
   assert.equal($('retry-failed').hidden, true);
   assert.match($('wallet-list').children[0].textContent, /✓ Scanned/);
@@ -485,10 +490,10 @@ test('automatically retries transient rate limits and reports remaining rate-lim
     const network = new URL(url, 'https://wallet.example').searchParams.get('network');
     calls[network] = (calls[network] || 0) + 1;
     if (network === 'base' || (network === 'ethereum' && calls[network] === 1)) return { ok: false, status: 429 };
-    return { ok: true, json: async () => ({ assets: [zeroNative] }) };
+    return { ok: true, json: async () => completeResult(network, [zeroNative]) };
   };
   w.scanDirect = async () => { throw Object.assign(new Error('Indexer returned 429'), { status: 429 }); };
-  w.eval(bundle); w.eval(fs.readFileSync('public/app.js', 'utf8'));
+  w.eval(bundle); setPricing(w); w.eval(fs.readFileSync('public/app.js', 'utf8'));
   const $ = id => w.document.getElementById(id);
   for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
   assert.equal(calls.ethereum, 2);
@@ -540,10 +545,10 @@ test('imports Bitcoin and TRON addresses and scans only the correct networks', a
   $('wallet-address').value = tron; submit(w, $('address-form'));
   for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
   const recent = requests.slice(1).map(url => new URL(url, 'https://wallet.example').searchParams.get('network'));
-  assert.deepEqual(recent.sort(), ['bitcoin', 'tron']);
+  assert.deepEqual(recent, ['tron'], 'the completed Bitcoin check is not restarted');
   assert.equal($('wallet-count').textContent, '2');
   assert.match($('asset-list').textContent, /TRX/);
-  assert.match($('wallet-list').textContent, /native-only coverage/);
+  assert.match($('wallet-list').textContent, /limited token coverage/);
   dom.window.close();
 });
 
@@ -562,7 +567,7 @@ test('EVM wallet scans BNB Smart Chain and reports incomplete native-only covera
   assert.match($('asset-list').textContent, /BNB/);
   assert.equal($('total-value').textContent, '—');
   assert.equal($('remove-zero').disabled, true);
-  assert.match($('zero-help').textContent, /native-only coverage/);
+  assert.match($('zero-help').textContent, /limited token coverage/);
   dom.window.close();
 });
 
@@ -577,10 +582,10 @@ test('a failed Bitcoin check can be retried without losing successful mixed-netw
     const network = new URL(url, 'https://wallet.example').searchParams.get('network'); requests.push(network);
     if (network === 'bitcoin' && fail) return { ok: false, status: 400 };
     const symbol = network === 'bitcoin' ? 'BTC' : network === 'tron' ? 'TRX' : 'ETH';
-    return { ok: true, json: async () => ({ assets: [{ ...zeroNative, symbol, rawBalance: '1', decimals: 0 }] }) };
+    return { ok: true, json: async () => completeResult(network, [{ ...zeroNative, symbol, rawBalance: '1', decimals: 0 }]) };
   };
   w.scanDirect = async () => { throw new Error('Provider unavailable'); };
-  w.eval(bundle); w.eval(fs.readFileSync('public/app.js', 'utf8'));
+  w.eval(bundle); setPricing(w); w.eval(fs.readFileSync('public/app.js', 'utf8'));
   const $ = id => w.document.getElementById(id);
   for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
   assert.equal(requests.length, 7);
@@ -605,7 +610,7 @@ test('native-only L2 fallback remains incomplete and retry replaces rather than 
   w.fetch = async url => {
     const network = new URL(url, w.location.href).searchParams.get('network');
     if (network === 'optimism') return { ok: true, json: async () => full ? { assets: [{ ...native, price: '100' }] } : { coverage: 'native-only', assets: [native] } };
-    return { ok: true, json: async () => ({ assets: [zeroNative] }) };
+    return { ok: true, json: async () => completeResult(network, [zeroNative]) };
   };
   $('wallet-address').value = address1; submit(w, $('address-form'));
   for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
@@ -616,7 +621,7 @@ test('native-only L2 fallback remains incomplete and retry replaces rather than 
   full = true; $('retry-failed').click();
   for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
   assert.equal($('asset-list').querySelectorAll('tr').length, 1);
-  assert.equal($('total-value').textContent, '$100.00');
+  assert.equal($('total-value').textContent, '₹8,300.00');
   assert.equal($('retry-failed').hidden, true);
   dom.window.close();
 });
@@ -639,5 +644,250 @@ test('scan errors show the specific reason for each network', async () => {
   assert.match(message, /Ethereum: 1 — Invalid or incomplete indexer data \(1\)/);
   assert.match(message, /Arbitrum: 1 — Native balance only; token and NFT data unavailable \(1\)/);
   assert.match(message, /not treated as zero/);
+  dom.window.close();
+});
+
+test('BNB and canonical BUSD values and the whole watch total update in INR without another balance scan', async () => {
+  const { BUSD_BSC } = require('../lib/prices');
+  const { dom, w, $, requests } = setup();
+  let quote = { currency: 'INR', usdToInr: 83, rateAt: '2026-10-31T00:00:00.000Z', prices: { bnb: 600, busd: 0.97 } };
+  w.pricing = { snapshot: () => ({ data: quote, loading: false }), refresh: () => {} };
+  w.fetch = async url => {
+    requests.push(url);
+    const network = new URL(url, 'https://wallet.example').searchParams.get('network');
+    const assets = network === 'bnb' ? [
+      { name: 'BNB', symbol: 'BNB', type: 'native', rawBalance: '1500000000000000000', decimals: 18, price: null },
+      { name: 'Binance-Peg BUSD', symbol: 'BUSD', type: 'BEP-20', contract: BUSD_BSC, rawBalance: '2000000000000000000', decimals: 18, price: null },
+    ] : [zeroNative];
+    return { ok: true, json: async () => ({ coverage: network === 'bnb' ? 'bnb-and-busd' : 'complete', assets }) };
+  };
+  $('wallet-address').value = address1; submit(w, $('address-form'));
+  for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
+  assert.equal(requests.length, 5); assert.equal($('asset-count').textContent, '2');
+  assert.equal($('total-value').textContent, '₹74,861.02');
+  assert.match($('asset-list').textContent, /BUSD/); assert.match($('asset-list').textContent, /₹74,700\.00/);
+  assert.match($('asset-list').textContent, /₹161\.02/);
+  assert.equal(w.document.querySelector('.balance-currency').textContent, 'INR');
+  assert.equal($('rate-asof').hidden, false); assert.match($('rate-asof').textContent, /INR rate updated/);
+  assert.doesNotMatch($('asset-list').textContent, /\bUSD\b|\$/);
+  quote = { currency: 'INR', usdToInr: 80, prices: { bnb: 500, busd: 1.02 } };
+  w.dispatchEvent(new w.Event('pricing:update'));
+  assert.equal($('total-value').textContent, '₹60,163.20'); assert.equal(requests.length, 5);
+  quote = { currency: 'INR', usdToInr: 80, prices: { bnb: 500, busd: null } };
+  w.dispatchEvent(new w.Event('pricing:update'));
+  assert.equal($('total-value').textContent, '₹60,000.00');
+  assert.match($('asset-list').textContent, /Price unavailable/); assert.match($('value-note').textContent, /1 asset without a price/);
+  quote = { currency: 'INR', usdToInr: null, prices: { bnb: 500, busd: 1.02 } };
+  w.dispatchEvent(new w.Event('pricing:update'));
+  assert.equal($('total-value').textContent, '—'); assert.match($('value-note').textContent, /INR exchange rate unavailable/);
+  assert.equal($('asset-list').querySelectorAll('tr').length, 2);
+  assert.equal(($('asset-list').textContent.match(/INR rate unavailable/g) || []).length, 2);
+  dom.window.close();
+});
+
+test('a failed BUSD check stays incomplete and retry replaces the BNB result', async () => {
+  const { BUSD_BSC } = require('../lib/prices');
+  const { dom, w, $, requests } = setup();
+  const quote = { currency: 'INR', usdToInr: 83, prices: { bnb: 600, busd: 0.97 } };
+  w.pricing = { snapshot: () => ({ data: quote, loading: false }), refresh: () => {} };
+  let complete = false; let directCalls = 0;
+  const bnb = { name: 'BNB', symbol: 'BNB', type: 'native', rawBalance: '1000000000000000000', decimals: 18, price: null };
+  const busd = { name: 'Binance-Peg BUSD', symbol: 'BUSD', type: 'BEP-20', contract: BUSD_BSC, rawBalance: '3000000000000000000', decimals: 18, price: null };
+  w.scanDirect = async () => { directCalls++; return { coverage: 'native-only', assets: [bnb] }; };
+  w.fetch = async url => {
+    requests.push(url);
+    const network = new URL(url, 'https://wallet.example').searchParams.get('network');
+    return { ok: true, json: async () => network !== 'bnb' ? { assets: [zeroNative] } : complete ? { coverage: 'bnb-and-busd', assets: [bnb, busd] } : { coverage: 'native-only', assets: [bnb] } };
+  };
+  $('wallet-address').value = address1; submit(w, $('address-form'));
+  for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
+  assert.equal(directCalls, 1); assert.match($('scan-errors').textContent, /BUSD check unavailable/);
+  assert.equal($('retry-failed').hidden, false); assert.equal($('total-value').textContent, '₹49,800.00');
+  complete = true; $('retry-failed').click();
+  for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
+  assert.equal(requests.length, 6); assert.equal($('asset-count').textContent, '2');
+  assert.equal($('total-value').textContent, '₹50,041.53'); assert.equal($('retry-failed').hidden, true);
+  dom.window.close();
+});
+
+test('five wallets scan healthy networks while one slow network is capped at three', { timeout: 15000 }, async () => {
+  const dom = new JSDOM(fs.readFileSync('public/index.html', 'utf8'), { url: 'https://wallet.example/', runScripts: 'outside-only' });
+  const w = dom.window; const $ = id => w.document.getElementById(id);
+  const wallets = Array.from({ length: 5 }, (_, i) => ({ address: `0x${(i + 1).toString(16).padStart(40, '0')}` }));
+  w.localStorage.setItem('walleto.wallets', JSON.stringify(wallets));
+  const current = {}; const peaks = {}; const held = []; const calls = [];
+  let active = 0; let peak = 0; let hold = true;
+  w.fetch = async url => {
+    const params = new URL(url, 'https://wallet.example').searchParams;
+    const network = params.get('network'); const address = params.get('address');
+    calls.push({ network, address }); active++; peak = Math.max(peak, active);
+    current[network] = (current[network] || 0) + 1; peaks[network] = Math.max(peaks[network] || 0, current[network]);
+    try {
+      if (network === 'ethereum' && hold) await new Promise(resolve => held.push(resolve));
+      else await new Promise(resolve => setTimeout(resolve, 5));
+      const asset = { ...zeroNative, name: network, symbol: network === 'bnb' ? 'BNB' : 'ETH', rawBalance: '1000000000000000000', price: '2' };
+      return { ok: true, json: async () => completeResult(network, [asset]) };
+    } finally { active--; current[network]--; }
+  };
+  try {
+    w.eval(bundle); setPricing(w); w.eval(fs.readFileSync('public/app.js', 'utf8'));
+    for (let i = 0; i < 100 && $('progress-percent').textContent !== '80%'; i++) await wait();
+    assert.equal($('progress-percent').textContent, '80%');
+    assert.equal(held.length, 3, 'no more than three Ethereum checks occupy slots');
+    assert.equal($('asset-count').textContent, '20');
+    assert.equal($('total-value').textContent, '₹3,320.00');
+    assert.match($('value-note').textContent, /Partial results/);
+    assert.ok(peak <= 15, `global peak ${peak}`);
+    assert.ok(Object.values(peaks).every(value => value <= 3), JSON.stringify(peaks));
+    for (const wallet of wallets) assert.equal(calls.filter(call => call.address === wallet.address && call.network !== 'ethereum').length, 4);
+    hold = false; held.forEach(resolve => resolve());
+    for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
+    assert.equal($('progress-percent').textContent, '100%');
+    assert.equal($('asset-count').textContent, '25');
+    assert.equal($('total-value').textContent, '₹4,150.00');
+    assert.equal(calls.length, 25);
+  } finally { hold = false; held.forEach(resolve => resolve()); dom.window.close(); }
+});
+
+test('a priced token-only result is in the main INR total even when every chain check is incomplete', async () => {
+  const { dom, w, $ } = setup();
+  const token = { name: 'Verified token', symbol: 'TOK', type: 'ERC-20', contract: '0x2222222222222222222222222222222222222222', rawBalance: '3', decimals: 0, price: '2' };
+  w.scanDirect = async () => { throw new Error('unavailable'); };
+  w.fetch = async url => {
+    if (networkOf(url) === 'base') return { ok: true, json: async () => ({ coverage: 'tokens-only', components: { native: false, tokens: true }, assets: [token] }) };
+    return { ok: false, status: 400 };
+  };
+  $('wallet-address').value = address1; submit(w, $('address-form'));
+  for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
+  assert.equal($('total-value').textContent, '₹498.00');
+  assert.equal($('asset-count').textContent, '1');
+  assert.match($('asset-list').textContent, /Verified token/);
+  assert.match($('value-note').textContent, /Partial results/);
+  assert.match($('scan-errors').textContent, /Base: 1.*Native balance unavailable/);
+  assert.match($('wallet-list').textContent, /Incomplete/);
+  assert.equal($('remove-zero').disabled, true);
+  assert.equal($('retry-failed').hidden, false);
+  dom.window.close();
+});
+
+test('partial retries retain missing prior components as previous, then replace them without duplicates', async () => {
+  const { dom, w, $ } = setup(); let phase = 'initial'; let release;
+  const native = { ...zeroNative, rawBalance: '1000000000000000000', price: '2' };
+  const token = { name: 'Token', symbol: 'TOK', type: 'ERC-20', contract: '0x2222222222222222222222222222222222222222', rawBalance: '2', decimals: 0, price: '3' };
+  w.scanDirect = async () => { throw new Error('unavailable'); };
+  w.fetch = async url => {
+    const network = networkOf(url);
+    if (network !== 'base') return { ok: true, json: async () => completeResult(network, [zeroNative]) };
+    if (phase === 'initial') return { ok: true, json: async () => ({ coverage: 'tokens-only', assets: [token] }) };
+    if (phase === 'pending') { await new Promise(resolve => { release = resolve; }); return { ok: true, json: async () => ({ coverage: 'native-only', assets: [native] }) }; }
+    return { ok: true, json: async () => ({ assets: [native, { ...token, rawBalance: '3' }] }) };
+  };
+  $('wallet-address').value = address1; submit(w, $('address-form'));
+  for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
+  assert.equal($('total-value').textContent, '₹498.00');
+  phase = 'pending'; $('retry-failed').click();
+  assert.equal($('total-value').textContent, '₹498.00');
+  assert.match($('asset-list').textContent, /previous balance/i);
+  assert.match($('value-note').textContent, /previous balances/i);
+  release();
+  for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
+  assert.equal($('asset-count').textContent, '2');
+  assert.equal($('total-value').textContent, '₹664.00');
+  assert.match($('asset-list').textContent, /previous balance/i);
+  assert.match($('value-note').textContent, /previous balances/i);
+  assert.equal($('retry-failed').hidden, false);
+  phase = 'complete'; $('retry-failed').click();
+  for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
+  assert.equal($('asset-count').textContent, '2');
+  assert.equal($('total-value').textContent, '₹913.00');
+  assert.doesNotMatch($('asset-list').textContent, /previous balance/i);
+  assert.equal($('retry-failed').hidden, true);
+  dom.window.close();
+});
+
+test('verified server partial is shown before waiting for browser fallback', async () => {
+  const { dom, w, $ } = setup(); let release;
+  const native = { ...zeroNative, rawBalance: '1000000000000000000', price: '2' };
+  w.scanDirect = () => new Promise((_resolve, reject) => { release = () => reject(new Error('unavailable')); });
+  w.fetch = async url => {
+    const network = networkOf(url);
+    return { ok: true, json: async () => network === 'base' ? { coverage: 'native-only', assets: [native] } : completeResult(network, [zeroNative]) };
+  };
+  $('wallet-address').value = address1; submit(w, $('address-form'));
+  await new Promise(resolve => setTimeout(resolve, 220));
+  assert.equal($('refresh').disabled, true);
+  assert.equal($('asset-count').textContent, '1');
+  assert.equal($('total-value').textContent, '₹166.00');
+  assert.match($('value-note').textContent, /Partial results/);
+  release();
+  for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
+  assert.equal($('retry-failed').hidden, false);
+  dom.window.close();
+});
+
+test('complementary server and browser components complete one check without double counting', async () => {
+  const { dom, w, $ } = setup();
+  const native = { ...zeroNative, rawBalance: '1000000000000000000', price: '2' };
+  const token = { name: 'Token', symbol: 'TOK', type: 'ERC-20', contract: '0x2222222222222222222222222222222222222222', rawBalance: '2', decimals: 0, price: '3' };
+  w.scanDirect = async () => ({ coverage: 'native-only', assets: [native] });
+  w.fetch = async url => { const network = networkOf(url); return { ok: true, json: async () => network === 'base' ? { coverage: 'tokens-only', assets: [token] } : completeResult(network, [zeroNative]) }; };
+  $('wallet-address').value = address1; submit(w, $('address-form'));
+  for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
+  assert.equal($('asset-count').textContent, '2');
+  assert.equal($('total-value').textContent, '₹664.00');
+  assert.equal($('retry-failed').hidden, true);
+  assert.doesNotMatch($('asset-list').textContent, /previous balance/i);
+  dom.window.close();
+});
+
+test('adding or removing a wallet does not restart completed checks for other wallets', async () => {
+  const { dom, w, $, requests } = setup();
+  w.fetch = async url => {
+    requests.push(url); const params = new URL(url, 'https://wallet.example').searchParams;
+    const asset = params.get('network') === 'ethereum' ? { ...zeroNative, rawBalance: '1000000000000000000', price: '2' } : zeroNative;
+    return { ok: true, json: async () => completeResult(params.get('network'), [asset]) };
+  };
+  $('wallet-address').value = address1; submit(w, $('address-form'));
+  for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
+  assert.equal(requests.length, 5); assert.equal($('total-value').textContent, '₹166.00');
+  $('wallet-address').value = address2; submit(w, $('address-form'));
+  for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
+  assert.equal(requests.length, 10);
+  assert.equal(requests.filter(url => url.includes(address1)).length, 5);
+  assert.equal($('total-value').textContent, '₹332.00');
+  const remove = [...$('wallet-list').querySelectorAll('[data-address]')].find(button => button.dataset.address === address1);
+  assert.ok(remove); remove.click(); await wait();
+  assert.equal(requests.length, 10, 'removing a wallet does not rescan the survivor');
+  assert.equal($('wallet-count').textContent, '1');
+  assert.equal($('asset-count').textContent, '1');
+  assert.equal($('total-value').textContent, '₹166.00');
+  dom.window.close();
+});
+
+test('adding a wallet cancels an unfinished response body without restarting completed checks or accepting late data', async () => {
+  const { dom, w, $, requests } = setup(); let releaseBody; let stuckSignal; let stuckOnce = false;
+  w.fetch = async (url, options) => {
+    requests.push(url); const params = new URL(url, 'https://wallet.example').searchParams;
+    const network = params.get('network'); const address = params.get('address');
+    if (address === address1 && network === 'base' && !stuckOnce) {
+      stuckOnce = true; stuckSignal = options.signal;
+      return { ok: true, json: () => new Promise(resolve => { releaseBody = resolve; }) };
+    }
+    return { ok: true, json: async () => completeResult(network, [zeroNative]) };
+  };
+  $('wallet-address').value = address1; submit(w, $('address-form'));
+  for (let i = 0; i < 100 && $('progress-percent').textContent !== '80%'; i++) await wait();
+  assert.equal($('progress-percent').textContent, '80%'); assert.ok(releaseBody);
+  $('wallet-address').value = address2; submit(w, $('address-form'));
+  assert.equal(stuckSignal.aborted, true);
+  for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
+  assert.equal($('progress-percent').textContent, '100%');
+  assert.equal(requests.length, 11);
+  const old = requests.filter(url => url.includes(address1)).map(networkOf);
+  assert.equal(old.filter(network => network === 'base').length, 2);
+  assert.ok(['ethereum', 'arbitrum', 'optimism', 'bnb'].every(network => old.filter(item => item === network).length === 1));
+  releaseBody({ assets: [{ ...zeroNative, rawBalance: '1000000000000000000', price: '999' }] });
+  await wait();
+  assert.equal($('asset-count').textContent, '0', 'a late response from the canceled scan is ignored');
   dom.window.close();
 });

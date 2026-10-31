@@ -1,10 +1,19 @@
 import { Wallet, Mnemonic, sha256, getBytes } from 'ethers';
 import { createAddressTools } from '../lib/addresses';
-import { scanNativeNetwork } from '../lib/native-scanner';
+import { scanNativeNetwork, scanBnb } from '../lib/native-scanner';
+import { scanEvmIndexed } from '../lib/evm-indexer';
+import { inspectResult, mergeAssets } from '../lib/scan-result';
+import { createScanQueue } from '../lib/scan-queue';
+import { usdPrice, positive } from '../lib/prices';
 import { scanEvmNativeFallback } from '../lib/evm-fallback';
 
 window.watchAddressTools = createAddressTools(bytes => getBytes(sha256(bytes)));
 window.scanNativeNetwork = scanNativeNetwork;
+window.scanBnb = scanBnb;
+window.scanEvmIndexed = scanEvmIndexed;
+window.scanResultTools = { inspectResult, mergeAssets };
+window.createScanQueue = createScanQueue;
+window.priceTools = { usdPrice, positive };
 window.scanEvmNativeFallback = scanEvmNativeFallback;
 
 // 128 cryptographically random bits plus the BIP-39 checksum produce 12 words.

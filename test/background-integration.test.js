@@ -26,7 +26,8 @@ function page(origin, savedJobs) {
   if (savedJobs) w.localStorage.setItem('walleto.background-jobs', savedJobs);
   w.TextDecoder = global.TextDecoder;
   w.FileReader = class { constructor() { throw new Error('File content must not be read by browser JavaScript'); } };
-  w.fetch = (resource, options) => fetch(new URL(resource, origin), options);
+  // jsdom uses Node's fetch here, which does not add a browser Origin header.
+  w.fetch = (resource, options = {}) => fetch(new URL(resource, origin), { ...options, headers: { ...options.headers, ...(options.method === 'POST' ? { Origin: new URL(origin).origin } : {}) } });
   w.confirm = () => true;
   w.eval(bundle); w.eval(background); w.eval(app);
   return dom;
@@ -40,10 +41,11 @@ test('real HTTP file upload continues after the browser disconnects and reconnec
   // this test-only transport shim. The HTTP security tests separately verify
   // that the real endpoint rejects missing and cross-origin upload headers.
   const source = `const http=require('http');const create=http.createServer;http.createServer=listener=>create((req,res)=>{if(req.method==='POST'&&!req.headers.origin&&/jsdom/.test(req.headers['user-agent']||''))req.headers.origin='http://'+req.headers.host;return listener(req,res)});const scanner=require('./lib/scanner');
-    scanner.scanWallet=async (_address,network)=>{await new Promise(r=>setTimeout(r,500));return {assets:[{name:network==='bnb'?'BNB':'Ether',symbol:network==='bnb'?'BNB':'ETH',type:'native',rawBalance:'1000000000000000000',decimals:18,price:'2'}]}};
+    scanner.scanWallet=async (_address,network)=>{await new Promise(r=>setTimeout(r,500));const assets=[{name:network==='bnb'?'BNB':'Ether',symbol:network==='bnb'?'BNB':'ETH',type:'native',rawBalance:'1000000000000000000',decimals:18,price:'2'}];if(network==='bnb')assets.push({name:'Binance-Peg BUSD',symbol:'BUSD',type:'BEP-20',contract:'0xe9e7cea3dedca5984780bafc599bd69add087d56',rawBalance:'2000000000000000000',decimals:18,price:null});return {assets,coverage:network==='bnb'?'bnb-and-busd':'complete'}};
+    require('./lib/market').getMarket=async()=>({currency:'INR',usdToInr:83,prices:{bnb:600,busd:0.97}});
     require('./server');`;
   const child = spawn(process.execPath, ['-e', source], { cwd: process.cwd(), env: { ...process.env, PORT: String(port), WALLETO_BACKGROUND_DIR: dir }, stdio: ['ignore', 'pipe', 'pipe'] });
-  let output = ''; let first; let reopened;
+  let output = ''; let first; let reopened; let reconnected;
   try {
     await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('server startup timeout')), 5000);
@@ -68,21 +70,70 @@ test('real HTTP file upload continues after the browser disconnects and reconnec
       result = await response.json(); return result.status === 'finished';
     });
     assert.equal(result.wallets, 1); assert.equal(result.invalid, 1); assert.equal(result.completed, 5);
-    assert.equal(result.assetCount, 5); assert.equal(result.knownValue, 10);
+    assert.equal(result.assetCount, 6); assert.ok(Math.abs(result.knownValue - 609.94) < 1e-9);
     assert.equal(JSON.stringify(result).includes(phrase), false);
     reopened = page(origin, saved); const v = reopened.window;
-    await until(() => v.document.querySelectorAll('#asset-list .asset-open').length === 5);
+    await until(() => v.document.querySelectorAll('#asset-list .asset-open').length === 6);
     assert.equal(v.document.getElementById('wallet-count').textContent, '1');
-    assert.equal(v.document.getElementById('asset-count').textContent, '5');
-    assert.equal(v.document.getElementById('total-value').textContent, '$10.00');
+    assert.equal(v.document.getElementById('asset-count').textContent, '6');
+    assert.equal(v.document.getElementById('total-value').textContent, '₹50,625.02');
+    assert.match(v.document.getElementById('asset-list').textContent, /BUSD/);
     v.document.querySelector('#asset-list .asset-open').click();
     assert.equal(v.document.getElementById('asset-export-address').textContent, address);
     v.document.getElementById('asset-export-reveal').click();
     await until(() => v.document.getElementById('asset-export-phrase').textContent === phrase);
-    reopened.window.close();
+    v.document.getElementById('asset-export-close').click();
+    v.document.getElementById('file-refresh-bnb').click();
+    await until(async () => {
+      const response = await fetch(`${origin}api/background/jobs/${id}`, { headers: { Authorization: `Bearer ${token}` } });
+      return (await response.json()).status === 'scanning';
+    });
+    reopened.window.close(); // The new BNB/BUSD check continues on the server.
+    await until(async () => {
+      const response = await fetch(`${origin}api/background/jobs/${id}/dashboard?assetOffset=0&walletOffset=0&network=all`, { headers: { Authorization: `Bearer ${token}` } });
+      result = await response.json(); return result.status === 'finished';
+    });
+    assert.equal(result.incomplete, 0); assert.equal(result.assetCount, 6);
+    reconnected = page(origin, saved);
+    await until(() => reconnected.window.document.getElementById('total-value').textContent === '₹50,625.02');
+    assert.match(reconnected.window.document.getElementById('asset-list').textContent, /BUSD/);
   } finally {
-    first?.window.close(); reopened?.window.close();
+    first?.window.close(); reopened?.window.close(); reconnected?.window.close();
     if (child.exitCode === null && child.signalCode === null) { child.kill('SIGTERM'); await new Promise(resolve => child.once('exit', resolve)); }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a finished file shows balances before a slow INR quote and refreshes its total when pricing arrives', { timeout: 15000 }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-e2e-prices-'));
+  const probe = http.createServer(); await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
+  const port = probe.address().port; await new Promise(resolve => probe.close(resolve));
+  const source = `let quote=null;let waiters=[];process.on('message',()=>{quote={currency:'INR',usdToInr:83,prices:{}};for(const resolve of waiters)resolve(quote);waiters=[]});require('./lib/market').getMarket=()=>quote?Promise.resolve(quote):new Promise(resolve=>waiters.push(resolve));
+    require('./lib/scanner').scanWallet=async (_address,network)=>({assets:[{name:'Native',symbol:'ETH',type:'native',rawBalance:'1000000000000000000',decimals:18,price:'2'},...(network==='bnb'?[{name:'BUSD',symbol:'BUSD',type:'BEP-20',contract:'0xe9e7cea3dedca5984780bafc599bd69add087d56',rawBalance:'0',decimals:18,price:null}]:[])],...(network==='bnb'?{coverage:'bnb-and-busd'}:{})});
+    require('./server');`;
+  const child = spawn(process.execPath, ['-e', source], { cwd: process.cwd(), env: { ...process.env, PORT: String(port), WALLETO_BACKGROUND_DIR: dir }, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+  let dom;
+  try {
+    await new Promise((resolve, reject) => {
+      let output = ''; const timer = setTimeout(() => reject(new Error('server startup timeout')), 5000);
+      child.stdout.on('data', chunk => { output += chunk; if (output.includes('Wallet viewer running')) { clearTimeout(timer); resolve(); } });
+      child.on('exit', code => reject(new Error(`server exited: ${code}`)));
+    });
+    const origin = `http://127.0.0.1:${port}/`;
+    const uploaded = await fetch(`${origin}api/background/jobs`, { method: 'POST', headers: { Origin: origin.slice(0, -1), 'Content-Type': 'application/octet-stream' }, body: phrase });
+    const { id, token } = await uploaded.json(); assert.equal(uploaded.status, 202);
+    await until(async () => (await (await fetch(`${origin}api/background/jobs/${id}`, { headers: { Authorization: `Bearer ${token}` } })).json()).status === 'finished');
+    dom = page(origin, JSON.stringify([{ id, token }]));
+    const w = dom.window; w.AbortSignal = global.AbortSignal;
+    w.eval(fs.readFileSync('public/pricing.js', 'utf8'));
+    await until(() => w.document.querySelectorAll('#asset-list .asset-open').length === 5);
+    assert.equal(w.document.getElementById('total-value').textContent, '—');
+    assert.match(w.document.getElementById('value-note').textContent, /INR exchange rate unavailable/i);
+    child.send('release market quote');
+    await until(() => w.document.getElementById('total-value').textContent === '₹830.00', 8000);
+    assert.equal(w.document.querySelectorAll('#asset-list .asset-open').length, 5);
+  } finally {
+    dom?.window.close(); child.kill('SIGTERM'); await new Promise(resolve => child.once('exit', resolve));
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

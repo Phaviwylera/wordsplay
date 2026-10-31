@@ -4,11 +4,13 @@ const networks = {
   bnb: { name: 'BNB Smart Chain', short: 'BNB', color: '#d39b16' }, bitcoin: { name: 'Bitcoin', short: 'BTC', color: '#f7931a' }, tron: { name: 'TRON', short: 'TRX', color: '#eb0029' },
 };
 const { classifyAddress } = window.watchAddressTools;
+const { usdPrice, positive } = window.priceTools;
+const { inspectResult, mergeAssets } = window.scanResultTools;
 const fileScan = window.fileScan || null;
 const familyNetworks = { evm: ['ethereum', 'base', 'arbitrum', 'optimism', 'bnb'], bitcoin: ['bitcoin'], tron: ['tron'] };
 const keyFor = address => classifyAddress(address)?.key;
 const networksFor = address => familyNetworks[classifyAddress(address)?.family] || [];
-const nativeOnlyNetworks = new Set(['bitcoin', 'tron', 'bnb']);
+const limitedNetworks = new Set(['bitcoin', 'tron', 'bnb']);
 const $ = (selector) => document.querySelector(selector);
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 const shortAddress = (address) => `${address.slice(0, 6)}...${address.slice(-4)}`;
@@ -42,7 +44,14 @@ let fileWalletPage = 0;
 let viewMode = fileScan?.snapshot().hasJob ? 'file' : 'watch';
 let watchInitialized = false;
 const PAGE_SIZE = 100;
-const SCAN_CONCURRENCY = 8;
+const SCAN_CONCURRENCY = 15;
+const SCANS_PER_NETWORK = 3;
+// Reuse one limiter across refreshes: aborted requests that are still winding
+// down cannot briefly multiply the provider load when the watch list changes.
+const watchQueue = window.createScanQueue({ concurrency: SCAN_CONCURRENCY, perNetwork: SCANS_PER_NETWORK });
+let assetGroups = new Map();
+let assetsDirty = false;
+let completedChecks = new Set();
 let walletStates = new Map();
 let zeroWallets = new Set();
 let failedChecks = new Map();
@@ -76,19 +85,53 @@ function addAddresses(addresses, source = 'address') {
     wallets.push(wallet); added++; changed = true;
   }
   const saved = (!changed && !storageDirty) || persist();
-  if (added) scan();
+  if (added) scan('incremental');
   return { added, duplicates, saved };
 }
 function amount(raw, decimals) {
   try {
+    if (typeof raw !== 'string' || !/^\d+$/.test(raw) || !((typeof decimals === 'number' && Number.isInteger(decimals)) || (typeof decimals === 'string' && /^\d+$/.test(decimals))) || Number(decimals) < 0 || Number(decimals) > 255) return null;
     const digits = BigInt(raw).toString();
-    const places = Math.max(0, Math.min(100, Number(decimals) || 0));
+    const places = Number(decimals);
     const padded = digits.padStart(places + 1, '0');
-    return Number(places ? `${padded.slice(0, -places)}.${padded.slice(-places)}` : padded);
-  } catch (_) { return 0; }
+    const value = Number(places ? `${padded.slice(0, -places)}.${padded.slice(-places)}` : padded);
+    return Number.isFinite(value) ? value : null;
+  } catch (_) { return null; }
 }
-function money(value) { return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 }).format(value); }
-function quantity(value) { return value > 0 && value < 0.00000001 ? '<0.00000001' : new Intl.NumberFormat('en-US', { maximumFractionDigits: 8 }).format(value); }
+function money(value) { return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format(value); }
+function inrValue(value, rate) { return rate !== null && Number.isFinite(value * rate) ? money(value * rate) : '—'; }
+function marketSnapshot() { return window.pricing?.snapshot() || { data: null, loading: false }; }
+function renderRateTime(market) {
+  const timestamp = Date.parse(market?.rateAt || '');
+  const valid = positive(market?.usdToInr) !== null && Number.isFinite(timestamp);
+  $('#rate-asof').hidden = !valid;
+  $('#rate-asof').textContent = valid ? `INR rate updated ${new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(timestamp))}` : '';
+}
+const checkKey = (wallet, network) => `${keyFor(wallet.address)}:${network}`;
+function materializeAssets() {
+  if (assetsDirty) { scanData.assets = Array.from(assetGroups.values()).flat(); assetsDirty = false; }
+  return scanData.assets;
+}
+function replaceAssetGroup(key, next) {
+  for (const asset of assetGroups.get(key) || []) {
+    if (asset.price === null) scanData.unpriced--; else scanData.knownValue -= asset.balance * asset.price;
+  }
+  if (next.length) assetGroups.set(key, next); else assetGroups.delete(key);
+  for (const asset of next) {
+    if (asset.price === null) scanData.unpriced++; else scanData.knownValue += asset.balance * asset.price;
+  }
+  if (scanData.knownValue < 0 && scanData.knownValue > -1e-9) scanData.knownValue = 0;
+  assetsDirty = true;
+}
+function refreshLocalPrices() {
+  const prices = marketSnapshot().data?.prices || {};
+  scanData.knownValue = 0; scanData.unpriced = 0;
+  for (const asset of materializeAssets()) {
+    asset.price = usdPrice({ ...asset, price: asset.providerPrice }, asset.network, prices);
+    if (asset.price === null) scanData.unpriced++; else scanData.knownValue += asset.balance * asset.price;
+  }
+}
+function quantity(value) { return !Number.isFinite(value) ? '—' : value > 0 && value < 0.00000001 ? '<0.00000001' : new Intl.NumberFormat('en-IN', { maximumFractionDigits: 8 }).format(value); }
 function updatePager(prefix, page, count) {
   const pager = $(`#${prefix}-pager`);
   pager.hidden = count <= PAGE_SIZE;
@@ -102,11 +145,16 @@ function walletScanLabel(wallet) {
   const total = networksFor(wallet.address).length;
   if (state.done < total) return { css: '', label: `Scanning ${state.done}/${total} networks` };
   if (state.failed) return { css: 'incomplete', label: `⚠ Incomplete · ${state.failed} failed` };
-  return { css: 'complete', label: state.limited ? '✓ Scanned · native-only coverage on some networks' : state.hasAssets ? '✓ Scanned · assets found' : '✓ Scanned · no assets found' };
+  return { css: 'complete', label: state.limited ? '✓ Scanned · limited token coverage on some networks' : state.hasAssets ? '✓ Scanned · assets found' : '✓ Scanned · no assets found' };
 }
-function renderAssetRows(items) {
+function renderAssetRows(items, rate) {
   renderedAssets = items;
-  $('#asset-list').innerHTML = renderedAssets.map((asset, index) => `<tr class="asset-row" data-asset-index="${index}"><td><button type="button" class="asset-open" aria-haspopup="dialog" aria-label="${escapeHtml(`Export options for ${asset.name}, ${asset.meta.name}, wallet ${asset.wallet.address}`)}"><span class="asset-name"><span class="token-icon" style="--token-color:${asset.meta.color}">${escapeHtml(asset.symbol.slice(0, 1).toUpperCase())}</span><span><strong>${escapeHtml(asset.name)}</strong><small>${escapeHtml(asset.symbol)} · ${escapeHtml(shortAddress(asset.wallet.address))}${asset.tokenId ? ` · #${escapeHtml(asset.tokenId)}` : ''}</small><span class="asset-open-hint">Export options ↗</span></span></span></button></td><td><span class="network-pill"><i style="background:${asset.meta.color}"></i>${asset.meta.name}</span></td><td><strong>${quantity(asset.balance)}</strong><small>${escapeHtml(asset.symbol)}</small></td><td><strong>${asset.price === null ? '—' : money(asset.balance * asset.price)}</strong><small>${asset.price === null ? (asset.nft ? 'Collectible' : 'Price unavailable') : 'USD'}</small></td></tr>`).join('');
+  $('#asset-list').innerHTML = renderedAssets.map((asset, index) => {
+    const note = asset.stale ? ' · previous balance; check incomplete' : asset.checkStatus === 'partial' || asset.checkStatus === 'failed' ? ' · check incomplete' : ['pending', 'running'].includes(asset.checkStatus) ? ' · updating' : '';
+    const priceNote = asset.price === null ? (asset.nft ? 'Collectible' : 'Price unavailable') : rate === null ? 'INR rate unavailable' : 'INR · approx.';
+    const value = asset.price === null ? '—' : inrValue(asset.balance * asset.price, rate);
+    return `<tr class="asset-row" data-asset-index="${index}"><td><button type="button" class="asset-open" aria-haspopup="dialog" aria-label="${escapeHtml(`Export options for ${asset.name}, ${asset.meta.name}, wallet ${asset.wallet.address}`)}"><span class="asset-name"><span class="token-icon" style="--token-color:${asset.meta.color}">${escapeHtml(asset.symbol.slice(0, 1).toUpperCase())}</span><span><strong>${escapeHtml(asset.name)}</strong><small>${escapeHtml(asset.symbol)} · ${escapeHtml(shortAddress(asset.wallet.address))}${asset.tokenId ? ` · #${escapeHtml(asset.tokenId)}` : ''}</small><span class="asset-open-hint">Export options ↗</span></span></span></button></td><td><span class="network-pill"><i style="background:${asset.meta.color}"></i>${asset.meta.name}</span></td><td><strong>${quantity(asset.balance)}</strong><small>${escapeHtml(asset.symbol)}${note}</small></td><td><strong>${value}</strong><small>${priceNote}</small></td></tr>`;
+  }).join('');
 }
 function syncFileView() {
   fileScan?.setView({ assetOffset: fileAssetPage * PAGE_SIZE, walletOffset: fileWalletPage * PAGE_SIZE, network: $('#network-filter').value });
@@ -126,19 +174,22 @@ function renderFile() {
   const items = hasView ? data.assets.flatMap(row => {
     const asset = row.asset; const meta = networks[row.network];
     if (!meta || !classifyAddress(row.address) || !asset || typeof asset.rawBalance !== 'string' || !/^\d+$/.test(asset.rawBalance)) return [];
-    const balance = amount(asset.rawBalance, asset.decimals); const nft = /ERC-721|ERC-1155/i.test(asset.type || '');
-    const price = asset.price == null || asset.price === '' || !Number.isFinite(Number(asset.price)) || Number(asset.price) < 0 || nft ? null : Number(asset.price);
+    const balance = amount(asset.rawBalance, asset.decimals); const nft = /(?:ERC|BEP)-(?:721|1155)/i.test(asset.type || '');
+    // The server's page and global total use the same market snapshot.
+    const price = balance === null ? null : usdPrice(asset, row.network, data.market?.prices || {});
     return [{ ...asset, name: typeof asset.name === 'string' && asset.name ? asset.name : 'Unknown asset', symbol: typeof asset.symbol === 'string' && asset.symbol ? asset.symbol : 'UNKNOWN',
-      balance, price, nft, network: row.network, meta, wallet: { address: row.address, source: 'file' }, fileJobId: state.jobId,
-      remotePhraseAvailable: Boolean(data.phraseMatching && data.retainsPhrases) }];
+      stale: Boolean(asset.stale || ['pending', 'running'].includes(row.status) || (['partial', 'failed'].includes(row.status) && asset.stale === undefined)), balance, price, nft, network: row.network, meta, checkStatus: row.status, wallet: { address: row.address, source: 'file' }, fileJobId: state.jobId,
+      remotePhraseAvailable: Boolean(row.phraseAvailable && data.phraseMatching && data.retainsPhrases) }];
   }) : [];
   const running = data && ['importing', 'scanning'].includes(data.status);
-  const unavailableValue = !data || data.status === 'failed' || !Number.isFinite(data.knownValue) || (data.knownValue === 0 && (running || data.incomplete || data.unpriced));
-  $('#total-value').textContent = unavailableValue ? '—' : money(data.knownValue);
-  $('#value-note').textContent = !data ? (state.uploading ? 'Uploading to the server…' : state.hasJob ? 'Connecting to EC2…' : 'Upload a .txt file to begin') : data.status === 'failed' ? 'File processing failed' : running ? 'Partial results while EC2 scans' : data.incomplete ? 'Partial results · some checks incomplete' : data.unpriced ? `${data.unpriced} asset${data.unpriced === 1 ? '' : 's'} without a price` : 'Across this uploaded file';
+  const rate = positive(data?.market?.usdToInr);
+  const unavailableValue = !data || !Number.isFinite(data.knownValue) || (data.knownValue === 0 && (running || data.status === 'failed' || data.incomplete || data.unpriced)) || (!rate && count > 0);
+  $('#total-value').textContent = unavailableValue ? '—' : count ? inrValue(data.knownValue, rate) : money(0);
+  $('#value-note').textContent = !data ? (state.uploading ? 'Uploading to the server…' : state.hasJob ? 'Connecting to EC2…' : 'Upload a .txt file to begin') : !rate && count ? 'INR exchange rate unavailable · refresh to retry' : data.status === 'failed' ? 'File processing failed · saved results may be partial or previous' : running ? 'Partial results while EC2 scans · previous balances may be shown' : data.incomplete ? 'Partial results · some balances may be previous' : data.unpriced ? `${data.unpriced} asset${data.unpriced === 1 ? '' : 's'} without a price` : 'Across this uploaded file';
+  renderRateTime(data?.market);
   $('#wallet-count').textContent = $('#wallet-badge').textContent = count;
   $('#asset-count').textContent = assetCount; $('#asset-badge').textContent = filteredCount;
-  renderAssetRows(items);
+  renderAssetRows(items, rate);
   const walletRows = hasView ? data.walletPage : [];
   $('#wallet-list').innerHTML = walletRows.map(wallet => {
     const label = wallet.completed < wallet.total ? `Scanning ${wallet.completed}/${wallet.total} networks` : wallet.incomplete ? `⚠ Incomplete · ${wallet.incomplete} checks` : wallet.hasAssets ? '✓ Scanned · assets found' : '✓ Scanned · no assets found';
@@ -158,6 +209,7 @@ function renderFile() {
   $('#remove-all').disabled = true; $('#remove-all').textContent = `Remove all wallets (${wallets.length})`;
   $('#remove-all').title = 'File results are managed with Delete file results & phrases.';
   $('#remove-zero').hidden = true; $('#zero-help').hidden = true;
+  $('#refresh').title = 'Reload server results and prices';
   $('#refresh').disabled = !state.hasJob || state.uploading; $('#refresh').classList.toggle('spinning', Boolean(state.loading));
   $('#scan-progress').hidden = !(state.hasJob || state.uploading || state.error);
   const percentage = state.uploading ? state.uploadPercent : data?.total ? Math.round(data.completed / data.total * 100) : data?.status === 'finished' ? 100 : 0;
@@ -168,6 +220,7 @@ function renderFile() {
   $('#scan-errors').hidden = !error; $('#scan-errors').textContent = error;
   $('#scan-status').hidden = !error; $('#scan-status').textContent = error;
   $('#retry-failed').hidden = !(data?.status === 'finished' && data.incomplete > 0); $('#retry-failed').disabled = false; $('#retry-failed').textContent = 'Retry incomplete checks';
+  $('#file-refresh-bnb').hidden = !(data?.status === 'finished' && count > 0);
   $('#file-remove').hidden = !data || !['finished', 'failed'].includes(data.status);
 }
 let sourceOptionsKey = '';
@@ -195,16 +248,22 @@ function render() {
   $('#asset-description').textContent = 'Balances across your tracked wallets. Select an asset to export its wallet.';
   $('#wallet-description').textContent = 'Your tracked addresses.';
   $('#file-remove').hidden = true;
+  $('#file-refresh-bnb').hidden = true;
   $('#remove-all').title = 'Remove all watch-list entries';
   $('#retry-failed').textContent = 'Retry failed checks';
   const selected = $('#network-filter').value;
-  const { total, completed, failed, assets: items, knownValue, unpriced } = scanData;
+  const items = materializeAssets();
+  const { total, completed, failed, knownValue, unpriced } = scanData;
   const pending = total - completed;
   const succeeded = completed - failed;
   const visible = selected === 'all' ? items : items.filter(a => a.network === selected);
-  const noReliableTotal = wallets.length && ((!succeeded) || (knownValue === 0 && (failed || pending || unpriced)));
-  $('#total-value').textContent = noReliableTotal ? '—' : money(knownValue);
-  $('#value-note').textContent = !wallets.length ? 'Add a wallet to get started' : pending ? 'Scanning your wallets…' : failed ? (succeeded ? 'Partial results · some networks unavailable' : 'Balance unavailable · scan failed') : unpriced ? `${unpriced} asset${unpriced === 1 ? '' : 's'} without a price` : 'Across all your wallets';
+  const market = marketSnapshot(); const rate = positive(market.data?.usdToInr);
+  const hasPricedBalance = items.some(asset => asset.price !== null && Number.isFinite(asset.balance * asset.price));
+  const hasStaleBalance = items.some(asset => asset.stale);
+  const noReliableTotal = wallets.length && (!rate || (!succeeded && !hasPricedBalance) || (knownValue === 0 && (failed || pending || unpriced) && !hasPricedBalance));
+  $('#total-value').textContent = noReliableTotal ? '—' : wallets.length ? inrValue(knownValue, rate) : money(0);
+  $('#value-note').textContent = !wallets.length ? 'Add a wallet to get started' : !rate ? (market.loading ? 'Loading INR exchange rate…' : 'INR exchange rate unavailable · refresh to retry') : pending ? (hasStaleBalance ? 'Partial results · includes previous balances' : items.length ? 'Partial results while scanning' : 'Scanning your wallets…') : failed ? (succeeded || items.length ? (hasStaleBalance ? 'Partial results · includes previous balances' : 'Partial results · some networks unavailable') : 'Balance unavailable · scan failed') : unpriced ? `${unpriced} asset${unpriced === 1 ? '' : 's'} without a price` : 'Across all your wallets';
+  renderRateTime(market.data);
   $('#wallet-count').textContent = $('#wallet-badge').textContent = wallets.length;
   $('#asset-count').textContent = items.length;
   $('#asset-badge').textContent = visible.length;
@@ -213,7 +272,7 @@ function render() {
   walletPage = Math.min(walletPage, Math.max(0, Math.ceil(wallets.length / PAGE_SIZE) - 1));
   assetPage = Math.min(assetPage, Math.max(0, Math.ceil(visible.length / PAGE_SIZE) - 1));
   $('#wallet-list').innerHTML = wallets.slice(walletPage * PAGE_SIZE, (walletPage + 1) * PAGE_SIZE).map(wallet => { const state = walletScanLabel(wallet); return `<div class="wallet-row"><span class="wallet-avatar">◈</span><div class="wallet-info"><strong title="${escapeHtml(wallet.address)}">${escapeHtml(wallet.address)}</strong><span class="wallet-scan-state ${state.css}">${escapeHtml(state.label)}</span></div><button class="remove-wallet" data-address="${escapeHtml(wallet.address)}" aria-label="Remove ${escapeHtml(wallet.address)}" title="Remove wallet">×</button></div>`; }).join('');
-  renderAssetRows(visible.slice(assetPage * PAGE_SIZE, (assetPage + 1) * PAGE_SIZE));
+  renderAssetRows(visible.slice(assetPage * PAGE_SIZE, (assetPage + 1) * PAGE_SIZE), rate);
   updatePager('wallet', walletPage, wallets.length);
   updatePager('asset', assetPage, visible.length);
   $('#empty-state').hidden = visible.length > 0;
@@ -244,7 +303,7 @@ function render() {
       const reasons = counts[check.network] ||= {};
       reasons[check.reason] = (reasons[check.reason] || 0) + 1;
     }
-    const explanations = { limited: 'Rate limiting detected', invalid: 'Invalid or incomplete indexer data', unavailable: 'Indexer or network unavailable', partial: 'Native balance only; token and NFT data unavailable' };
+    const explanations = { limited: 'Rate limiting detected', invalid: 'Invalid or incomplete indexer data', unavailable: 'Indexer or network unavailable', partial: 'Native balance only; token and NFT data unavailable', busd: 'BUSD check unavailable; retry', native: 'Native balance unavailable; token balances may be shown' };
     const details = Object.entries(counts).map(([network, reasons]) => {
       const count = Object.values(reasons).reduce((sum, value) => sum + value, 0);
       const breakdown = Object.entries(reasons).map(([reason, number]) => `${explanations[reason]} (${number})`).join('; ');
@@ -257,17 +316,18 @@ function render() {
   $('#remove-zero').hidden = !wallets.length;
   $('#remove-zero').disabled = loading || eligible === 0;
   $('#zero-help').hidden = !wallets.length;
-  $('#zero-help').textContent = 'Unavailable while some supported networks have native-only coverage; token and inscription balances may be missed. Failed scans are never treated as zero.';
+  $('#zero-help').textContent = 'Unavailable while some supported networks have limited token coverage; other tokens and inscriptions may be missed. Failed scans are never treated as zero.';
   $('#remove-zero').textContent = `Remove zero-balance wallets (${eligible})`;
   $('#remove-all').disabled = !wallets.length;
   $('#remove-all').textContent = `Remove all wallets (${wallets.length})`;
+  $('#refresh').title = 'Refresh balances and prices';
   $('#refresh').classList.toggle('spinning', loading);
   $('#refresh').disabled = loading || !wallets.length;
 }
 function recordWalletScan(wallet, hasAssets, failed, network) {
   const address = keyFor(wallet.address);
   const state = walletStates.get(address) || { done: 0, failed: 0, hasAssets: false, limited: false };
-  state.done++; state.failed += failed ? 1 : 0; state.hasAssets ||= hasAssets; state.limited ||= nativeOnlyNetworks.has(network);
+  state.done++; state.failed += failed ? 1 : 0; state.hasAssets ||= hasAssets; state.limited ||= limitedNetworks.has(network);
   walletStates.set(address, state);
   if (state.done === networksFor(wallet.address).length && !state.failed && !state.hasAssets && !state.limited) zeroWallets.add(address);
 }
@@ -282,8 +342,27 @@ async function scanRequest(url, options, signal, timeout) {
     options.signal?.addEventListener('abort', cancel, { once: true });
   }
   const timer = setTimeout(cancel, timeout);
-  try { return await fetch(url, { ...options, signal: controller.signal }); }
-  finally { clearTimeout(timer); signal.removeEventListener('abort', cancel); options.signal?.removeEventListener('abort', cancel); }
+  let rejectAbort;
+  const cancelled = new Promise((_, reject) => {
+    rejectAbort = () => reject(Object.assign(new Error('Scan cancelled or timed out'), { name: 'AbortError' }));
+    if (controller.signal.aborted) rejectAbort();
+    else controller.signal.addEventListener('abort', rejectAbort, { once: true });
+  });
+  // Attach a handler even if a mocked fetch throws synchronously.
+  cancelled.catch(() => {});
+  const cleanup = () => {
+    clearTimeout(timer); signal.removeEventListener('abort', cancel); options.signal?.removeEventListener('abort', cancel);
+    controller.signal.removeEventListener('abort', rejectAbort);
+  };
+  try {
+    const response = await Promise.race([fetch(url, { ...options, signal: controller.signal }), cancelled]);
+    if (!response.ok) { cleanup(); return response; }
+    // Keep cancellation and the deadline active until the JSON body is read,
+    // not just until the provider sends headers.
+    return { ok: response.ok, status: response.status, json: async () => {
+      try { return await Promise.race([response.json(), cancelled]); } finally { cleanup(); }
+    } };
+  } catch (error) { cleanup(); throw error; }
 }
 function scheduleRender() {
   if (renderTimer !== null) return;
@@ -305,113 +384,155 @@ function retryDelay(signal) {
     signal.addEventListener('abort', done, { once: true });
   });
 }
-async function scan(retryFailed = false) {
+function acceptSnapshot(wallet, network, data, status) {
+  const coverage = inspectResult(data, network, wallet.address);
+  const key = checkKey(wallet, network);
+  const combined = mergeAssets(assetGroups.get(key) || [], data.assets, coverage);
+  const prices = marketSnapshot().data?.prices || {};
+  const items = combined.flatMap(asset => {
+    const balance = amount(asset.rawBalance, asset.decimals);
+    if (balance <= 0) return [];
+    const nft = /(?:ERC|BEP)-(?:721|1155)/i.test(asset.type || '');
+    const providerPrice = Object.hasOwn(asset, 'providerPrice') ? asset.providerPrice : asset.price;
+    const price = usdPrice({ ...asset, price: providerPrice }, network, prices);
+    return [{ ...asset, name: typeof asset.name === 'string' && asset.name ? asset.name : 'Unknown asset',
+      symbol: typeof asset.symbol === 'string' && asset.symbol ? asset.symbol : 'UNKNOWN',
+      balance, price, providerPrice, nft, network, meta: networks[network], wallet, checkStatus: status }];
+  });
+  replaceAssetGroup(key, items);
+  return { coverage, hasAssets: items.length > 0 };
+}
+function combineSnapshots(first, second, network, address) {
+  const a = inspectResult(first, network, address); const b = inspectResult(second, network, address);
+  const native = a.native || b.native; const tokens = a.tokens || b.tokens;
+  const nativeSource = a.native ? first : second;
+  const tokenSource = a.tokens ? first : second;
+  const assets = [...(native ? nativeSource.assets.filter(asset => asset.type === 'native') : []),
+    ...(tokens ? tokenSource.assets.filter(asset => asset.type !== 'native') : [])];
+  const coverage = native && tokens ? (network === 'bnb' ? 'bnb-and-busd' : 'complete') : native ? 'native-only' : 'tokens-only';
+  return { assets, coverage, components: { native, tokens } };
+}
+function pruneWatchState(scanWallets) {
+  const valid = new Set(scanWallets.map(wallet => keyFor(wallet.address)));
+  const owner = key => key.slice(0, key.lastIndexOf(':'));
+  for (const key of assetGroups.keys()) if (!valid.has(owner(key))) replaceAssetGroup(key, []);
+  for (const key of completedChecks) if (!valid.has(owner(key))) completedChecks.delete(key);
+  for (const [key, check] of failedChecks) if (!valid.has(keyFor(check.wallet.address))) failedChecks.delete(key);
+  for (const address of walletStates.keys()) if (!valid.has(address)) walletStates.delete(address);
+  for (const address of zeroWallets) if (!valid.has(address)) zeroWallets.delete(address);
+}
+async function scan(mode = false) {
   watchInitialized = true;
-  const retry = retryFailed === true;
+  const retry = mode === true; const incremental = mode === 'incremental';
   if (retry && (loading || !failedChecks.size)) return;
   if (scanController) scanController.abort();
   scanController = new AbortController();
   const signal = scanController.signal;
-  const directFetcher = (url, options) => scanRequest(url, options, signal, 15000);
+  const directFetcher = (url, options) => scanRequest(url, options, signal, 12000);
   const version = ++scanVersion;
   const scanWallets = wallets.slice();
+  pruneWatchState(scanWallets);
   let retryTasks = null;
   if (retry) {
     retryTasks = [...failedChecks.values()];
-    // A partial native-only result may have contributed assets. Remove those
-    // before retrying so a successful retry cannot double-count them.
-    const retryKeys = new Set(retryTasks.map(({ wallet, network }) => `${keyFor(wallet.address)}:${network}`));
-    scanData.assets = scanData.assets.filter(asset => !retryKeys.has(`${keyFor(asset.wallet.address)}:${asset.network}`));
-    scanData.knownValue = scanData.assets.reduce((total, asset) => total + (asset.price === null ? 0 : asset.balance * asset.price), 0);
-    scanData.unpriced = scanData.assets.filter(asset => asset.price === null).length;
-    const walletsWithAssets = new Set(scanData.assets.map(asset => keyFor(asset.wallet.address)));
-    scanData.completed -= retryTasks.length;
-    scanData.failed -= retryTasks.length;
-    for (const { wallet } of retryTasks) {
+    for (const { wallet, network } of retryTasks) {
+      completedChecks.delete(checkKey(wallet, network));
       const state = walletStates.get(keyFor(wallet.address));
-      if (state) { state.done--; state.failed--; state.hasAssets = walletsWithAssets.has(keyFor(wallet.address)); }
+      if (state) { state.done--; state.failed--; }
     }
     failedChecks.clear();
-  } else {
-    scanData = { total: scanWallets.reduce((total, wallet) => total + networksFor(wallet.address).length, 0), completed: 0, failed: 0, assets: [], knownValue: 0, unpriced: 0 };
-    walletStates = new Map(); zeroWallets = new Set(); failedChecks = new Map();
+  } else if (!incremental) {
+    completedChecks.clear(); walletStates = new Map(); zeroWallets = new Set(); failedChecks = new Map();
   }
-  const taskCount = retry ? retryTasks.length : scanData.total;
+  scanData.total = scanWallets.reduce((total, wallet) => total + networksFor(wallet.address).length, 0);
+  scanData.completed = completedChecks.size; scanData.failed = failedChecks.size;
+  // Existing results remain visible while their checks are queued, and are
+  // clearly labelled as previous until a fresh response replaces them.
+  for (const [key, assets] of assetGroups) if (!completedChecks.has(key)) {
+    for (const asset of assets) { asset.stale = true; asset.checkStatus = 'pending'; }
+  }
+  const taskCount = scanData.total - scanData.completed;
   loading = taskCount > 0; render();
-  let next = 0; let walletIndex = 0; let networkIndex = 0;
-  function nextFullTask() {
-    const wallet = scanWallets[walletIndex];
-    const keys = networksFor(wallet.address);
-    const network = keys[networkIndex++];
-    if (networkIndex === keys.length) { walletIndex++; networkIndex = 0; }
-    return { wallet, network };
+  const families = { evm: [], bitcoin: [], tron: [] };
+  for (const wallet of scanWallets) families[classifyAddress(wallet.address).family].push(wallet);
+  const byNetwork = Object.fromEntries(Object.keys(networks).map(network => [network,
+    network === 'bitcoin' ? families.bitcoin : network === 'tron' ? families.tron : families.evm]));
+  const retryByNetwork = Object.fromEntries(Object.keys(networks).map(network => [network, []]));
+  if (retry) for (const item of retryTasks) retryByNetwork[item.network].push(item.wallet);
+  const cursor = Object.fromEntries(Object.keys(networks).map(network => [network, 0]));
+  function nextTask(network) {
+    const list = retry ? retryByNetwork[network] : byNetwork[network];
+    while (cursor[network] < list.length) {
+      const wallet = list[cursor[network]++];
+      if (!completedChecks.has(checkKey(wallet, network))) return wallet;
+    }
+    return null;
   }
-  async function worker() {
-    while (!signal.aborted && next < taskCount) {
-      const task = next++;
-      const { wallet, network } = retry ? retryTasks[task] : nextFullTask();
-      const address = wallet.address;
+  async function requestCheck(wallet, network) {
+    const address = wallet.address;
+    try {
+      const response = await scanRequest(`/api/scan?address=${encodeURIComponent(address)}&network=${encodeURIComponent(network)}`, {}, signal, 13000);
+      if (!response.ok) throw Object.assign(new Error('Server scan failed'), { status: response.status });
+      const data = await response.json();
+      const coverage = inspectResult(data, network, address);
+      if (!coverage.partial) return data;
+      // Publish the independently verified component now instead of waiting
+      // for a slower browser fallback. File jobs never enter this path.
+      if (version === scanVersion && !signal.aborted) { acceptSnapshot(wallet, network, data, 'pending'); scheduleRender(); }
       try {
-        let data;
-        for (let attempt = 0; ; attempt++) {
-          try {
-            try {
-              const response = await scanRequest(`/api/scan?address=${encodeURIComponent(address)}&network=${encodeURIComponent(network)}`, {}, signal, 17000);
-              if (!response.ok) throw Object.assign(new Error('Server scan failed'), { status: response.status });
-              data = await response.json();
-              if (!Array.isArray(data.assets)) throw new Error('Invalid response');
-              // The server may be unable to reach an indexer that the browser
-              // can access. Prefer full indexed results over a native-only RPC.
-              if (data.coverage === 'native-only' && !nativeOnlyNetworks.has(network)) {
-                try {
-                  const direct = await scanDirect(address, network, directFetcher);
-                  if (Array.isArray(direct.assets) && direct.coverage !== 'native-only') data = direct;
-                } catch (_) { /* Retain the verified server-side native balance. */ }
-                if (signal.aborted) return;
-              }
-            } catch (serverError) {
-              if (signal.aborted) return;
-              try { data = await scanDirect(address, network, directFetcher); }
-              catch (error) { if (error && typeof error === 'object') error.serverStatus = serverError.status; throw error; }
-            }
-            if (!Array.isArray(data.assets) || !data.assets.some(asset => asset && asset.type === 'native') || data.assets.some(asset => !asset || typeof asset.rawBalance !== 'string' || !/^\d+$/.test(asset.rawBalance))) throw new Error('Invalid balances');
-            break;
-          } catch (error) {
-            if (signal.aborted) return;
-            if (attempt >= 1 || !transientFailure(error)) throw error;
-            await retryDelay(signal);
-            if (signal.aborted) return;
-          }
+        const direct = await scanDirect(address, network, directFetcher);
+        return combineSnapshots(data, direct, network, address);
+      } catch (_) { return data; }
+    } catch (serverError) {
+      if (signal.aborted) throw serverError;
+      try {
+        const direct = await scanDirect(address, network, directFetcher);
+        inspectResult(direct, network, address); return direct;
+      } catch (error) { if (error && typeof error === 'object') error.serverStatus = serverError.status; throw error; }
+    }
+  }
+  async function checkedRequest(wallet, network) {
+    for (let attempt = 0; ; attempt++) {
+      try { return await requestCheck(wallet, network); }
+      catch (error) {
+        if (signal.aborted || attempt >= 1 || !transientFailure(error)) throw error;
+        await retryDelay(signal);
+        if (signal.aborted) throw error;
+      }
+    }
+  }
+  async function worker(network) {
+    for (;;) {
+      if (signal.aborted) return;
+      const wallet = nextTask(network); if (!wallet) return;
+      const key = checkKey(wallet, network);
+      try {
+        const data = await watchQueue.run(network, () => checkedRequest(wallet, network), signal);
+        if (version !== scanVersion || signal.aborted) return;
+        const { coverage, hasAssets } = acceptSnapshot(wallet, network, data, 'done');
+        if (coverage.partial) {
+          for (const asset of assetGroups.get(key) || []) asset.checkStatus = 'partial';
+          scanData.failed++;
+          failedChecks.set(key, { wallet, network, reason: !coverage.native ? 'native' : network === 'bnb' ? 'busd' : 'partial' });
         }
-        if (version === scanVersion && !signal.aborted) {
-          const hasAssets = data.assets.some(asset => BigInt(asset.rawBalance) > 0n);
-          for (const asset of data.assets) {
-            const balance = amount(asset.rawBalance, asset.decimals);
-            if (balance <= 0) continue;
-            const nft = /ERC-721|ERC-1155/i.test(asset.type);
-            const price = asset.price !== null && asset.price !== '' && Number.isFinite(Number(asset.price)) && Number(asset.price) >= 0 && !nft ? Number(asset.price) : null;
-            scanData.assets.push({ ...asset, balance, price, nft, network, meta: networks[network], wallet });
-            if (price === null) scanData.unpriced++; else scanData.knownValue += balance * price;
-          }
-          scanData.completed++;
-          const partial = data.coverage === 'native-only' && !nativeOnlyNetworks.has(network);
-          if (partial) {
-            scanData.failed++;
-            failedChecks.set(`${keyFor(address)}:${network}`, { wallet, network, reason: 'partial' });
-          }
-          recordWalletScan(wallet, hasAssets, partial, network);
-        }
+        completedChecks.add(key); scanData.completed++;
+        recordWalletScan(wallet, hasAssets, coverage.partial, network);
       } catch (error) {
-        if (version === scanVersion && !signal.aborted) {
-          scanData.failed++; scanData.completed++;
-          failedChecks.set(`${keyFor(address)}:${network}`, { wallet, network, reason: failureReason(error) });
-          recordWalletScan(wallet, false, true, network);
-        }
+        if (version !== scanVersion || signal.aborted) return;
+        const earlier = assetGroups.get(key) || [];
+        for (const asset of earlier) { asset.stale = true; asset.checkStatus = 'partial'; }
+        scanData.failed++; scanData.completed++; completedChecks.add(key);
+        failedChecks.set(key, { wallet, network, reason: failureReason(error) });
+        recordWalletScan(wallet, earlier.length > 0, true, network);
       }
       if (version === scanVersion && !signal.aborted) scheduleRender();
     }
   }
-  await Promise.all(Array.from({ length: Math.min(SCAN_CONCURRENCY, taskCount) }, worker));
+  const workers = [];
+  if (taskCount) for (let lane = 0; lane < SCANS_PER_NETWORK; lane++) {
+    for (const network of Object.keys(networks)) workers.push(worker(network));
+  }
+  await Promise.all(workers);
   if (version === scanVersion) {
     if (renderTimer !== null) { clearTimeout(renderTimer); renderTimer = null; }
     loading = false; render();
@@ -481,7 +602,7 @@ function openAssetExport(asset, opener) {
   $('#asset-export-note').textContent = remote
     ? 'The recovery phrase is retained on EC2 and is retrieved over the private tunnel only when you reveal or export it.'
     : includePhrase ? 'The export includes this wallet address and its recovery phrase, which is available only in this tab.'
-    : isFile ? (custodyJson ? 'This server job has no retained phrase. Unlock the matching wallet below or export only the address.' : 'This server job has no retained phrase for export. Only the public address is available.')
+    : isFile ? (custodyJson ? 'This server job has no retained phrase. Unlock the matching wallet below or export only the address.' : 'This server job has no retained phrase for export. Only the public address is available. Older scans may have discarded unmatched phrases before BUSD was checked; re-upload the file to link it again.')
     : wallet.source === 'seed'
       ? (custodyJson ? 'This imported phrase is no longer in this tab. Unlock the matching wallet below or re-import the phrase to include it; otherwise only the public address is exported.' : 'This wallet was imported from a recovery phrase, but phrases are not saved after leaving or reloading. Re-import it to include the phrase, or export only the public address.')
       : custodyJson ? 'Only the public address is available until you unlock the matching self-custody wallet below.' : 'Only the public address is available. If this wallet was previously imported from a recovery phrase, re-import it in this tab to include the phrase.';
@@ -623,7 +744,7 @@ $('#address-form').addEventListener('submit', event => {
   const address = field.value.trim();
   if (!classifyAddress(address)) return importStatus('Enter a valid Bitcoin, TRON or EVM public address.', true);
   const result = addAddresses([address]);
-  viewMode = 'watch'; if (!watchInitialized) scan(); else render();
+  viewMode = 'watch'; if (!watchInitialized) scan('incremental'); else render();
   field.value = '';
   importStatus(!result.saved ? 'Address tracked for this session, but browser storage is unavailable.' : result.duplicates ? 'This address is already being tracked.' : 'Address added. Scanning balances…', !result.saved);
 });
@@ -701,7 +822,7 @@ $('#wallet-list').addEventListener('click', event => {
   sessionPhrases.delete(removed);
   if (activeExport?.key === removed) closeAssetExport(false);
   wallets = wallets.filter(wallet => keyFor(wallet.address) !== removed);
-  const saved = persist(); scan();
+  const saved = persist(); scan('incremental');
   if (!saved) importStatus('The removal could not be saved in browser storage.', true);
 });
 $('#remove-all').addEventListener('click', () => {
@@ -721,14 +842,10 @@ $('#remove-zero').addEventListener('click', () => {
   const count = zeroWallets.size;
   if (!confirm(`Remove ${count} wallet${count === 1 ? '' : 's'} with no assets found on their completely scanned networks? This removes only the watch list entries, not the wallets or funds. Other chains and unindexed assets are not checked.`)) return;
   cancelPendingPhraseImport();
-  const removedChecks = wallets.filter(wallet => zeroWallets.has(keyFor(wallet.address))).reduce((sum, wallet) => sum + networksFor(wallet.address).length, 0);
   wallets = wallets.filter(wallet => !zeroWallets.has(keyFor(wallet.address)));
   if (activeExport && zeroWallets.has(activeExport.key)) closeAssetExport(false);
-  for (const address of zeroWallets) { walletStates.delete(address); sessionPhrases.delete(address); }
-  zeroWallets.clear();
-  scanData.total -= removedChecks;
-  scanData.completed -= removedChecks;
-  const saved = persist(); render();
+  for (const address of zeroWallets) sessionPhrases.delete(address);
+  const saved = persist(); scan('incremental');
   importStatus(saved ? `Removed ${count} zero-balance wallet${count === 1 ? '' : 's'} from the watch list.` : `Removed ${count} wallet${count === 1 ? '' : 's'} for this session, but browser storage could not save the change.`, !saved);
 });
 $('#portfolio-source').addEventListener('change', event => {
@@ -739,7 +856,7 @@ $('#portfolio-source').addEventListener('change', event => {
     if (selected.startsWith('file:') && selected !== 'file:new') fileScan?.select(selected.slice(5));
     syncFileView();
   }
-  if (viewMode === 'watch' && !watchInitialized) scan(); else render();
+  if (viewMode === 'watch' && !watchInitialized) scan('incremental'); else render();
 });
 window.addEventListener('file-scan:started', () => {
   // Do not keep an unrelated foreground watch-list scan running when a file
@@ -754,6 +871,13 @@ window.addEventListener('file-scan:update', () => {
   if (activeExport?.source === 'file' && fileScan?.snapshot().jobId !== activeExport.fileJobId) closeAssetExport(false);
   if (viewMode === 'file') render(); else renderPortfolioSource();
 });
+window.addEventListener('pricing:update', () => {
+  refreshLocalPrices();
+  // File totals cover every page, so refresh them from EC2 using its market
+  // snapshot rather than repricing just the currently visible rows.
+  if (viewMode === 'file' && !marketSnapshot().loading && fileScan?.snapshot().hasJob) fileScan.refresh();
+  else render();
+});
 $('#network-filter').addEventListener('change', () => {
   if (viewMode === 'file') { fileAssetPage = 0; syncFileView(); } else assetPage = 0;
   render();
@@ -762,8 +886,9 @@ $('#wallet-prev').addEventListener('click', () => { if (viewMode === 'file') { f
 $('#wallet-next').addEventListener('click', () => { if (viewMode === 'file') { fileWalletPage++; syncFileView(); } else walletPage++; render(); });
 $('#asset-prev').addEventListener('click', () => { if (viewMode === 'file') { fileAssetPage--; syncFileView(); } else assetPage--; render(); });
 $('#asset-next').addEventListener('click', () => { if (viewMode === 'file') { fileAssetPage++; syncFileView(); } else assetPage++; render(); });
-$('#refresh').addEventListener('click', () => { if (viewMode === 'file') fileScan?.refresh(); else scan(); });
+$('#refresh').addEventListener('click', () => { window.pricing?.refresh(); if (viewMode === 'file') fileScan?.refresh(); else scan(); });
 $('#retry-failed').addEventListener('click', () => { if (viewMode === 'file') fileScan?.retry(); else scan(true); });
-$('#file-remove').addEventListener('click', async () => { if (await fileScan?.remove()) { fileAssetPage = 0; fileWalletPage = 0; $('#network-filter').value = 'all'; viewMode = fileScan.snapshot().hasJob ? 'file' : 'watch'; if (viewMode === 'watch' && !watchInitialized) scan(); else render(); } });
+$('#file-refresh-bnb').addEventListener('click', () => fileScan?.refreshBnb());
+$('#file-remove').addEventListener('click', async () => { if (await fileScan?.remove()) { fileAssetPage = 0; fileWalletPage = 0; $('#network-filter').value = 'all'; viewMode = fileScan.snapshot().hasJob ? 'file' : 'watch'; if (viewMode === 'watch' && !watchInitialized) scan('incremental'); else render(); } });
 $('#today').textContent = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date());
 if (viewMode === 'watch') scan(); else render();

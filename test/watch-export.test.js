@@ -37,7 +37,8 @@ function setup({ saved, custody, response } = {}) {
     requests.push({ url: String(url), options });
     const params = new URL(url, 'https://wallet.example').searchParams;
     const network = params.get('network');
-    const data = response ? response(params) : { assets: [network === 'ethereum' || network === 'base' ? positive : zero] };
+    let data = response ? response(params) : { assets: [network === 'ethereum' || network === 'base' ? positive : zero] };
+    if (network === 'bnb' && data.coverage === undefined) data = { ...data, coverage: 'bnb-and-busd', assets: [...data.assets, { type: 'BEP-20', symbol: 'BUSD', contract: '0xe9e7cea3dedca5984780bafc599bd69add087d56', rawBalance: '0', decimals: 18, price: null }] };
     return { ok: true, json: async () => data };
   };
   w.URL.createObjectURL = blob => { blobs.push(blob); return `blob:https://wallet.example/${blobs.length}`; };
@@ -208,7 +209,7 @@ test('selecting assets after pagination and filtering preserves the wallet assoc
   const ctx = setup({ response: params => {
     const address = params.get('address').toLowerCase();
     const network = params.get('network');
-    if (network === 'ethereum' && address === address1.toLowerCase()) return { assets: Array.from({ length: 105 }, (_, index) => ({ ...positive, name: `Token ${index}` })) };
+    if (network === 'ethereum' && address === address1.toLowerCase()) return { assets: [positive, ...Array.from({ length: 104 }, (_, index) => ({ ...positive, type: 'ERC-20', contract: `0x${index.toString(16).padStart(40, '0')}`, name: `Token ${index}` }))] };
     if ((network === 'ethereum' || network === 'base') && address === address2.toLowerCase()) return { assets: [positive] };
     return { assets: [zero] };
   } });
