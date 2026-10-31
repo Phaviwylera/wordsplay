@@ -1,207 +1,180 @@
 'use strict';
-// This feature is intentionally separate from the existing browser scan.
+// Uploaded files are sent directly to the private EC2 worker; the browser
+// never reads, parses, derives addresses from, or scans their contents.
 (function () {
   const $ = id => document.getElementById(id);
-  const key = 'walleto.background-job';
-  const panel = $('background-panel');
-  const PAGE_SIZE = 100;
-  const MATCH_PAGE_SIZE = 20;
-  let job = null; let offset = 0; let matchOffset = 0; let busy = false; let timer; let storageWarning = false;
-  const revealedPhrases = new Map();
-  try { job = JSON.parse(localStorage.getItem(key) || 'null'); } catch (_) {}
-  if (!job || !/^[a-f0-9]{64}$/.test(job.id || '') || !/^[a-f0-9]{64}$/.test(job.token || '')) job = null;
+  const storageKey = 'walleto.background-jobs';
+  const legacyStorageKey = 'walleto.background-job';
+  let jobs = []; let job = null; let timer = null; let requestVersion = 0; let uploading = false;
+  let storageWarning = false;
+  const view = { assetOffset: 0, walletOffset: 0, network: 'all' };
+  const state = { data: null, error: '', loading: false, uploadPercent: 0 };
+  const validJob = item => item && /^[a-f0-9]{64}$/.test(item.id || '') && /^[a-f0-9]{64}$/.test(item.token || '');
+  try {
+    const saved = localStorage.getItem(storageKey);
+    if (saved !== null) {
+      const stored = JSON.parse(saved);
+      if (Array.isArray(stored)) jobs = stored.filter(validJob).map(item => ({ id: item.id, token: item.token }));
+    } else {
+      const legacy = JSON.parse(localStorage.getItem(legacyStorageKey) || 'null');
+      if (validJob(legacy)) {
+        jobs = [{ id: legacy.id, token: legacy.token }];
+        localStorage.setItem(storageKey, JSON.stringify(jobs)); localStorage.removeItem(legacyStorageKey);
+      }
+    }
+  } catch (_) { storageWarning = true; }
+  job = jobs.at(-1) || null;
+  function persistJobs() {
+    try { localStorage.setItem(storageKey, JSON.stringify(jobs)); localStorage.removeItem(legacyStorageKey); storageWarning = false; }
+    catch (_) { storageWarning = true; }
+  }
   const privateAccess = () => location.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(location.hostname);
-  function show(message) { panel.hidden = false; $('background-status').textContent = message; }
-  function authorized(method = 'GET') { return { method, headers: { Authorization: `Bearer ${job.token}` } }; }
+  function notify() { window.dispatchEvent(new Event('file-scan:update')); }
+  function importStatus(message, error = false) {
+    const el = $('import-status');
+    el.textContent = message; el.hidden = false; el.classList.toggle('error', error);
+  }
+  function snapshot() {
+    return { hasJob: Boolean(job), jobId: job?.id || null, jobs: jobs.map(item => ({ id: item.id })), uploading, storageWarning, ...state, view: { ...view } };
+  }
   async function request(suffix = '', method = 'GET') {
-    const response = await fetch(`/api/background/jobs/${job.id}${suffix}`, authorized(method));
-    if (!response.ok) throw new Error('Could not load the EC2 job. Check the SSH tunnel and try again.');
-    return response.json();
-  }
-  const number = value => Number(value || 0).toLocaleString('en-US');
-  function formatAsset(asset) {
+    if (!job || !privateAccess()) throw new Error('Reconnect to the EC2 app through the private SSH tunnel.');
+    const controller = new AbortController(); const deadline = setTimeout(() => controller.abort(), 30000);
     try {
-      const decimals = Math.max(0, Math.min(100, Number(asset.decimals) || 0));
-      const value = BigInt(asset.rawBalance).toString().padStart(decimals + 1, '0');
-      if (BigInt(asset.rawBalance) === 0n) return null;
-      const amount = decimals ? `${value.slice(0, -decimals)}.${value.slice(-decimals).replace(/0+$/, '')}`.replace(/\.$/, '') : value;
-      return `${amount} ${asset.symbol || 'asset'}`;
-    } catch (_) { return null; }
+      const response = await fetch(`/api/background/jobs/${job.id}${suffix}`, { method, headers: { Authorization: `Bearer ${job.token}` }, signal: controller.signal });
+      if (!response.ok) throw new Error('Could not load the server job. Check the SSH tunnel, worker configuration, and EC2 deployment.');
+      return await response.json();
+    } finally { clearTimeout(deadline); }
   }
-  function cell(row, value) { const td = document.createElement('td'); td.textContent = value; row.appendChild(td); }
-
-  function renderMatches(data, status, incomplete) {
-    const container = $('background-matches');
-    container.replaceChildren();
-    $('background-match-count').textContent = number(data.total);
-    $('background-match-note').textContent = !data.enabled
-      ? 'This job was uploaded before phrase matching was enabled, so EC2 has no saved phrases for it. Let it finish if it is still scanning; then delete this job in the panel and upload the .txt file again with the current app to link phrases to addresses.'
-      : data.retained
-        ? (['importing', 'scanning'].includes(status) || incomplete ? 'EC2 temporarily retains encrypted copies of valid phrases while scanning, and keeps them if checks are incomplete so retries can still find matches. After all checks complete, unmatched phrases are removed from the job records. Phrases are sent to this browser only when you choose Reveal.' : 'EC2 keeps encrypted phrases only for wallets with detected positive balances. Phrases are sent to this browser only when you choose Reveal.')
-        : 'No recovery phrase is currently retained for a wallet with a detected positive balance. Incomplete checks are not zero balances.';
-    if (!data.retained || !data.matches.length) {
-      const empty = document.createElement('p');
-      empty.className = 'background-match-empty';
-      if (!data.enabled) empty.textContent = 'This older job has no phrase-to-address mapping. Once it finishes, delete it from this panel and upload the file again with the current app to create one.';
-      else if (!data.retained && status === 'finished' && !incomplete) empty.textContent = 'No positive balances were detected, so no recovery phrases were retained.';
-      else if (!data.retained) empty.textContent = 'No retained phrase matches are available for this job.';
-      else if (status === 'finished' && incomplete) empty.textContent = 'No positive balance detected yet. Some checks are incomplete; that does not mean those wallets are empty.';
-      else if (status === 'finished') empty.textContent = 'No positive balances were detected in the checked assets. Scan coverage limitations still apply.';
-      else empty.textContent = 'No positive balance detected yet. EC2 is still scanning.';
-      container.appendChild(empty);
-    }
-    for (const match of data.matches || []) {
-      const card = document.createElement('article');
-      card.className = 'background-match-card';
-      const title = document.createElement('div');
-      title.className = 'background-match-address';
-      const addressLabel = document.createElement('span');
-      addressLabel.textContent = 'Wallet address';
-      const address = document.createElement('code');
-      address.textContent = match.address;
-      title.append(addressLabel, address);
-      card.appendChild(title);
-
-      const balances = document.createElement('div');
-      balances.className = 'background-match-balances';
-      for (const check of match.checks || []) {
-        const line = document.createElement('p');
-        const network = document.createElement('strong');
-        network.textContent = check.network;
-        const assets = (check.assets || []).map(formatAsset).filter(Boolean).join(', ');
-        const amount = document.createElement('span');
-        amount.textContent = assets || 'Positive balance detected';
-        line.append(network, amount);
-        if (check.status === 'partial') {
-          const status = document.createElement('small');
-          status.textContent = 'Partial scan';
-          line.appendChild(status);
-        }
-        balances.appendChild(line);
-      }
-      card.appendChild(balances);
-
-      const phraseBlock = document.createElement('div');
-      phraseBlock.className = 'background-match-phrase-block';
-      const phraseLabel = document.createElement('span');
-      phraseLabel.textContent = 'Recovery phrase';
-      const phrase = document.createElement('code');
-      phrase.className = 'background-match-phrase';
-      phrase.setAttribute('aria-live', 'polite');
-      const showButton = document.createElement('button');
-      showButton.type = 'button';
-      showButton.className = 'background-reveal-button';
-      const drawPhraseState = () => {
-        const visible = revealedPhrases.has(match.address);
-        phrase.textContent = visible ? revealedPhrases.get(match.address) : 'Hidden — reveal only in a private place';
-        showButton.textContent = visible ? 'Hide phrase' : 'Reveal phrase';
-      };
-      drawPhraseState();
-      showButton.addEventListener('click', async () => {
-        if (revealedPhrases.has(match.address)) {
-          revealedPhrases.delete(match.address);
-          drawPhraseState();
-          return;
-        }
-        showButton.disabled = true;
-        phrase.textContent = 'Loading phrase…';
-        try {
-          const response = await request(`/phrase?address=${encodeURIComponent(match.address)}`);
-          if (typeof response.phrase !== 'string' || ![12, 15, 18, 21, 24].includes(response.phrase.trim().split(/\s+/).length)) throw new Error('The saved phrase could not be verified.');
-          revealedPhrases.set(match.address, response.phrase);
-          drawPhraseState();
-        } catch (error) { phrase.textContent = error.message; }
-        finally { showButton.disabled = false; }
-      });
-      phraseBlock.append(phraseLabel, phrase, showButton);
-      card.appendChild(phraseBlock);
-      container.appendChild(card);
-    }
-    const pager = $('background-match-pager');
-    pager.hidden = data.total <= MATCH_PAGE_SIZE;
-    $('background-match-prev').disabled = matchOffset === 0;
-    $('background-match-next').disabled = matchOffset + MATCH_PAGE_SIZE >= data.total;
-    $('background-match-page-label').textContent = data.total
-      ? `${number(matchOffset + 1)}–${number(Math.min(matchOffset + MATCH_PAGE_SIZE, data.total))} of ${number(data.total)}`
-      : '0 matches';
-  }
-
+  function schedule(delay) { clearTimeout(timer); timer = setTimeout(refresh, delay); }
   async function refresh() {
-    if (!job || !privateAccess()) return;
+    clearTimeout(timer);
+    if (!job) { state.loading = false; notify(); return; }
+    if (!privateAccess()) {
+      state.error = 'Reconnect to the EC2 app through the private SSH tunnel to see file results.';
+      state.loading = false; notify(); return;
+    }
+    const version = ++requestVersion; const current = job;
+    const params = new URLSearchParams({ assetOffset: String(view.assetOffset), walletOffset: String(view.walletOffset), network: view.network });
+    state.loading = true; notify();
     try {
-      const data = await request(`/results?offset=${offset}`);
-      const percent = data.total ? Math.floor(data.completed * 100 / data.total) : 0;
-      const message = { importing: 'Processing the uploaded file on EC2…', scanning: 'Scanning on EC2…', finished: 'Overnight scan finished', failed: 'Import failed' }[data.status] || 'Preparing…';
-      show(message);
-      $('background-percent').textContent = `${percent}%`;
-      $('background-progress').value = percent;
-      $('background-detail').textContent = `${storageWarning ? 'Browser storage failed: keep this page open or access to this job may be lost. ' : ''}${['importing', 'scanning'].includes(data.status) ? 'Upload confirmed; EC2 continues while your laptop is off. ' : ''}${number(data.wallets)} addresses · ${number(data.lines)} lines processed · ${number(data.invalid)} invalid · ${number(data.completed)}/${number(data.total)} checks · ${number(data.incomplete)} incomplete${data.error ? ` · ${data.error}` : ''}. Results are stored on EC2. Incomplete checks are not zero balances.`;
-      $('background-retry').hidden = data.status !== 'finished' || !data.incomplete;
-      $('background-remove').hidden = !['finished', 'failed'].includes(data.status);
-      const matchData = await request(`/matches?offset=${matchOffset}`);
-      renderMatches(matchData, data.status, data.incomplete);
-      const table = $('background-results'); table.replaceChildren();
-      for (const check of data.checks) {
-        const row = document.createElement('tr');
-        cell(row, check.address); cell(row, check.network);
-        cell(row, check.reason ? `${check.status}: ${check.reason}` : check.status);
-        cell(row, check.assets.map(formatAsset).filter(Boolean).join(', ') || '—');
-        table.appendChild(row);
-      }
-      $('background-pager').hidden = data.total <= PAGE_SIZE;
-      $('background-prev').disabled = offset === 0;
-      $('background-next').disabled = offset + PAGE_SIZE >= data.total;
-      $('background-page-label').textContent = `${number(Math.min(offset + 1, data.total))}–${number(Math.min(offset + PAGE_SIZE, data.total))} of ${number(data.total)}`;
-      clearTimeout(timer);
-      if (!['finished', 'failed'].includes(data.status)) timer = setTimeout(refresh, 3000);
-    } catch (error) { show(error.message); clearTimeout(timer); timer = setTimeout(refresh, 10000); }
+      const data = await request(`/dashboard?${params}`);
+      if (version !== requestVersion || current !== job) return;
+      const counts = ['assetCount', 'filteredAssetCount', 'wallets', 'total', 'completed', 'incomplete', 'invalid', 'assetOffset', 'walletOffset'];
+      if (!data || data.id !== current.id || !Array.isArray(data.assets) || !Array.isArray(data.walletPage)
+        || counts.some(key => !Number.isSafeInteger(data[key]) || data[key] < 0)
+        || data.completed > data.total || data.incomplete > data.completed
+        || !(data.knownValue === null || Number.isFinite(data.knownValue))
+        || data.assetOffset !== view.assetOffset || data.walletOffset !== view.walletOffset || data.network !== view.network
+        || !['importing', 'scanning', 'finished', 'failed'].includes(data.status)) throw new Error('Invalid dashboard response');
+      state.data = data; state.error = ''; state.loading = false;
+      notify();
+      if (['importing', 'scanning'].includes(data.status)) schedule(4000);
+    } catch (_) {
+      if (version !== requestVersion || current !== job) return;
+      state.loading = false;
+      state.error = 'Could not load server results. Reconnect the SSH tunnel and ensure the EC2 worker is enabled and updated.';
+      notify(); schedule(10000);
+    }
   }
-  $('background-start').addEventListener('click', () => {
-    if (busy) return;
-    if (!privateAccess()) return show('Overnight import requires the private SSH tunnel. Do not upload seed phrases over public HTTP.');
-    if (job) return show('A job is already saved in this browser. Finish and delete it before starting another.');
-    const file = $('seed-file').files[0];
-    if (!file || !/\.txt$/i.test(file.name)) return show('Choose a UTF-8 .txt file first.');
-    try { localStorage.setItem(`${key}.test`, '1'); localStorage.removeItem(`${key}.test`); }
-    catch (_) { return show('Browser storage is unavailable; the job could not be safely saved.'); }
-    if (!confirm('Send this .txt file to EC2 for overnight processing? It contains recovery phrases. EC2 temporarily stores encrypted copies for all valid phrases and, after scanning, retains phrases only for wallets with detected positive balances so you can match each phrase to its address. The encryption key is stored on the same EC2 volume; administrators, a compromised server, snapshots and backups may expose phrases. Deleting a job is not guaranteed secure erasure. This unaudited app is not suitable for valuable funds. Use only a private SSH tunnel.')) return;
-    busy = true; $('background-start').disabled = true; show('Uploading to EC2 — keep the laptop on until the upload is confirmed.');
+  function setView(next) {
+    const updated = {
+      assetOffset: Number.isSafeInteger(next.assetOffset) && next.assetOffset >= 0 ? next.assetOffset : view.assetOffset,
+      walletOffset: Number.isSafeInteger(next.walletOffset) && next.walletOffset >= 0 ? next.walletOffset : view.walletOffset,
+      network: typeof next.network === 'string' ? next.network : view.network,
+    };
+    if (updated.assetOffset === view.assetOffset && updated.walletOffset === view.walletOffset && updated.network === view.network) return;
+    Object.assign(view, updated);
+    if (job) refresh(); else notify();
+  }
+  function select(id) {
+    if (uploading) return;
+    const selected = jobs.find(item => item.id === id);
+    if (!selected || selected === job) return;
+    requestVersion++; clearTimeout(timer); job = selected;
+    state.data = null; state.error = ''; state.loading = false;
+    Object.assign(view, { assetOffset: 0, walletOffset: 0, network: 'all' });
+    refresh();
+  }
+  async function retry() {
+    if (!job || !state.data || state.data.status !== 'finished' || !state.data.incomplete) return;
+    try { await request('/retry', 'POST'); importStatus('Retrying incomplete checks on the server.'); refresh(); }
+    catch (_) { importStatus('Could not retry the server checks. Reconnect the SSH tunnel and try again.', true); }
+  }
+  async function remove() {
+    if (!job || !state.data || !['finished', 'failed'].includes(state.data.status)) return false;
+    if (!confirm('Delete this server job, its results, and retained recovery phrases? Snapshots, backups, and database remnants may still contain recoverable copies; this is not guaranteed secure erasure.')) return false;
+    try {
+      const removed = job;
+      await request('', 'DELETE');
+      jobs = jobs.filter(item => item.id !== removed.id); persistJobs();
+      const wasCurrent = removed === job;
+      if (wasCurrent) {
+        job = jobs.at(-1) || null; requestVersion++; clearTimeout(timer);
+        state.data = null; state.error = ''; state.loading = false;
+        Object.assign(view, { assetOffset: 0, walletOffset: 0, network: 'all' });
+      }
+      importStatus(storageWarning ? 'Server job removed, but browser storage could not update the job list.' : 'Server results and retained phrases removed from application records.', storageWarning);
+      notify(); if (wasCurrent && job) refresh(); return wasCurrent;
+    } catch (_) { importStatus('Could not delete the server job. Reconnect the SSH tunnel and try again.', true); return false; }
+  }
+  async function phrase(address, expectedJobId) {
+    if (!job || job.id !== expectedJobId || !privateAccess()) throw new Error('The server job is no longer available.');
+    const current = job;
+    const result = await request(`/phrase?address=${encodeURIComponent(address)}`);
+    if (current !== job || job.id !== expectedJobId) throw new Error('The server job changed.');
+    if (typeof result.phrase !== 'string' || result.phrase.length > 256 || ![12, 15, 18, 21, 24].includes(result.phrase.trim().split(/\s+/).length)) throw new Error('The server could not verify this recovery phrase.');
+    return result.phrase.trim().toLowerCase().replace(/\s+/g, ' ');
+  }
+  $('seed-file').addEventListener('change', () => {
+    const field = $('seed-file'); const file = field.files[0];
+    // Do not display a file name: it might itself contain sensitive information.
+    field.value = '';
+    if (!file) return;
+    if (uploading) return importStatus('A file upload is already in progress.', true);
+    if (!/\.txt$/i.test(file.name)) return importStatus('Choose a UTF-8 .txt file.', true);
+    if (!privateAccess()) return importStatus('File import requires the private SSH tunnel to EC2. The file was not processed or uploaded in this browser.', true);
+    try { localStorage.setItem(`${storageKey}.test`, '1'); localStorage.removeItem(`${storageKey}.test`); }
+    catch (_) { return importStatus('Browser storage is unavailable; the server job could not be safely linked for reconnection.', true); }
+    if (!confirm('Upload this .txt file containing recovery phrases to EC2? The server processes it and temporarily stores encrypted copies of valid phrases; the encryption key is on the same EC2 volume. Server administrators, a compromise, snapshots or backups may expose them, and deletion is not guaranteed secure erasure. Do not use phrases protecting valuable funds. Keep this laptop on until the upload is confirmed. Continue only through a private SSH tunnel?')) {
+      return importStatus('Upload cancelled; no file was sent.');
+    }
+    uploading = true; state.uploadPercent = 0; state.error = ''; state.data = null; state.loading = false;
+    job = null; requestVersion++; clearTimeout(timer);
+    Object.assign(view, { assetOffset: 0, walletOffset: 0, network: 'all' });
+    importStatus('Uploading to EC2 — keep the laptop on until the upload is confirmed.');
+    window.dispatchEvent(new Event('file-scan:started')); notify();
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/background/jobs');
     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-    xhr.upload.onprogress = event => { if (event.lengthComputable) $('background-detail').textContent = `Upload: ${Math.floor(event.loaded * 100 / event.total)}%. Do not close this page yet.`; };
-    xhr.onerror = () => { busy = false; $('background-start').disabled = false; show('Upload failed. Keep the laptop connected and try again.'); };
-    xhr.onload = () => {
-      busy = false; $('background-start').disabled = false;
-      try {
-        const data = JSON.parse(xhr.responseText);
-        if (xhr.status !== 202 || !/^[a-f0-9]{64}$/.test(data.id || '') || !/^[a-f0-9]{64}$/.test(data.token || '')) return show(data.error || 'Upload was not accepted.');
-        job = data;
-        try { localStorage.setItem(key, JSON.stringify(job)); }
-        catch (_) {
-          storageWarning = true;
-          show('Upload completed, but browser storage failed. Keep this page open; job access may be lost on reload.');
-          refresh();
-          return;
-        }
-        $('seed-file').value = ''; $('file-name').textContent = 'No file selected';
-        offset = 0; matchOffset = 0; revealedPhrases.clear(); show('Upload confirmed. EC2 is processing the file; you may turn off the laptop.'); refresh();
-      } catch (_) { show('Upload response was invalid. Check EC2 before retrying.'); }
+    xhr.upload.onprogress = event => {
+      if (event.lengthComputable && event.total > 0) state.uploadPercent = Math.max(0, Math.min(100, Math.floor(event.loaded * 100 / event.total)));
+      notify();
     };
-    xhr.send(file);
+    const failed = () => {
+      uploading = false; state.error = 'Upload status is unknown. EC2 may have accepted it; check the server before retrying.';
+      importStatus(state.error, true); notify();
+    };
+    xhr.onerror = failed; xhr.onabort = failed;
+    xhr.onload = () => {
+      uploading = false;
+      let result;
+      try { result = JSON.parse(xhr.responseText); } catch (_) { return failed(); }
+      if (xhr.status !== 202 || !/^[a-f0-9]{64}$/.test(result.id || '') || !/^[a-f0-9]{64}$/.test(result.token || '')) {
+        state.error = 'Upload was not confirmed. Check the private tunnel and EC2 worker before retrying.';
+        importStatus(state.error, true); notify(); return;
+      }
+      job = { id: result.id, token: result.token };
+      jobs.push(job); persistJobs();
+      const warning = storageWarning ? ' Browser storage failed; keep this page open or access to this job may be lost.' : '';
+      importStatus(`Upload confirmed. EC2 continues processing even if this laptop is off.${warning}`, storageWarning);
+      refresh();
+    };
+    try { xhr.send(file); } catch (_) { failed(); }
   });
-  $('background-prev').addEventListener('click', () => { offset = Math.max(0, offset - PAGE_SIZE); refresh(); });
-  $('background-next').addEventListener('click', () => { offset += PAGE_SIZE; refresh(); });
-  $('background-match-prev').addEventListener('click', () => { matchOffset = Math.max(0, matchOffset - MATCH_PAGE_SIZE); refresh(); });
-  $('background-match-next').addEventListener('click', () => { matchOffset += MATCH_PAGE_SIZE; refresh(); });
-  $('background-retry').addEventListener('click', async () => { try { await request('/retry', 'POST'); refresh(); } catch (error) { show(error.message); } });
-  $('background-remove').addEventListener('click', async () => {
-    if (!confirm('Delete this job, its saved scan results, and retained phrases from EC2 application records? Snapshots, backups and SQLite remnants may still contain recoverable copies; this is not guaranteed secure erasure.')) return;
-    try { await request('', 'DELETE'); localStorage.removeItem(key); job = null; revealedPhrases.clear(); clearTimeout(timer); panel.hidden = true; }
-    catch (error) { show(error.message); }
-  });
-  if (job) {
-    if (privateAccess()) refresh();
-    else show('Reconnect through the SSH tunnel to see the EC2 background job.');
-  }
+  window.addEventListener('beforeunload', event => { if (uploading) { event.preventDefault(); event.returnValue = ''; } });
+  window.addEventListener('pagehide', () => { requestVersion++; clearTimeout(timer); });
+  window.addEventListener('pageshow', event => { if (event.persisted && job) refresh(); });
+  window.fileScan = { snapshot, setView, select, refresh, retry, remove, phrase };
+  if (job) refresh();
 })();

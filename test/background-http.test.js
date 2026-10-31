@@ -39,6 +39,11 @@ test('background endpoints require SSH-style loopback host, same origin and a jo
     const { id, token } = result.body;
     assert.equal((await request(port, 'GET', `/api/background/jobs/${id}`, { host })).status, 404);
     assert.equal((await request(port, 'GET', `/api/background/jobs/${id}`, { host, authorization: `Bearer ${token}` })).status, 200);
+    assert.equal((await request(port, 'GET', `/api/background/jobs/${id}/dashboard`, { host })).status, 404);
+    assert.equal((await request(port, 'GET', `/api/background/jobs/${id}/dashboard`, { ...headers, host: 'example.com', authorization: `Bearer ${token}` })).status, 403);
+    const dashboard = await request(port, 'GET', `/api/background/jobs/${id}/dashboard?assetOffset=0&walletOffset=0&network=ethereum`, { host, authorization: `Bearer ${token}` });
+    assert.equal(dashboard.status, 200); assert.deepEqual(dashboard.body.assets, []); assert.deepEqual(dashboard.body.walletPage, []);
+    assert.equal(dashboard.body.network, 'ethereum');
     const matches = await request(port, 'GET', `/api/background/jobs/${id}/matches`, { host, authorization: `Bearer ${token}` });
     assert.equal(matches.status, 200);
     assert.deepEqual(matches.body.matches, []);
