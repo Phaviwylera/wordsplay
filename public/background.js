@@ -6,7 +6,7 @@
   const storageKey = 'walleto.background-jobs';
   const legacyStorageKey = 'walleto.background-job';
   let jobs = []; let job = null; let timer = null; let requestVersion = 0; let uploading = false;
-  let storageWarning = false;
+  let storageWarning = false; let refreshingBnb = false;
   const view = { assetOffset: 0, walletOffset: 0, network: 'all' };
   const state = { data: null, error: '', loading: false, uploadPercent: 0 };
   const validJob = item => item && /^[a-f0-9]{64}$/.test(item.id || '') && /^[a-f0-9]{64}$/.test(item.token || '');
@@ -69,7 +69,9 @@
         || !['importing', 'scanning', 'finished', 'failed'].includes(data.status)) throw new Error('Invalid dashboard response');
       state.data = data; state.error = ''; state.loading = false;
       notify();
-      if (['importing', 'scanning'].includes(data.status)) schedule(4000);
+      // Small jobs finish quickly; show their successful results without a
+      // four-second wait. Keep larger jobs gentler on EC2 and SQLite.
+      if (['importing', 'scanning'].includes(data.status)) schedule(data.total <= 100 ? 1000 : 4000);
     } catch (_) {
       if (version !== requestVersion || current !== job) return;
       state.loading = false;
@@ -100,6 +102,14 @@
     if (!job || !state.data || state.data.status !== 'finished' || !state.data.incomplete) return;
     try { await request('/retry', 'POST'); importStatus('Retrying incomplete checks on the server.'); refresh(); }
     catch (_) { importStatus('Could not retry the server checks. Reconnect the SSH tunnel and try again.', true); }
+  }
+  async function refreshBnb() {
+    if (refreshingBnb || !job || state.data?.status !== 'finished' || !state.data.wallets) return;
+    if (!confirm(`Recheck BNB and BUSD for all ${state.data.wallets.toLocaleString()} wallets on EC2? This can take time. Previous balances remain visible while updating.`)) return;
+    refreshingBnb = true;
+    try { await request('/refresh-bnb', 'POST'); importStatus('Rechecking BNB and BUSD on EC2. The server continues if this laptop is off.'); await refresh(); }
+    catch (_) { importStatus('Could not start the BNB and BUSD refresh. Reconnect the SSH tunnel and try again.', true); }
+    finally { refreshingBnb = false; }
   }
   async function remove() {
     if (!job || !state.data || !['finished', 'failed'].includes(state.data.status)) return false;
@@ -175,6 +185,6 @@
   window.addEventListener('beforeunload', event => { if (uploading) { event.preventDefault(); event.returnValue = ''; } });
   window.addEventListener('pagehide', () => { requestVersion++; clearTimeout(timer); });
   window.addEventListener('pageshow', event => { if (event.persisted && job) refresh(); });
-  window.fileScan = { snapshot, setView, select, refresh, retry, remove, phrase };
+  window.fileScan = { snapshot, setView, select, refresh, refreshBnb, retry, remove, phrase };
   if (job) refresh();
 })();

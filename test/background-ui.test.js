@@ -22,9 +22,10 @@ async function until(check, timeout = 5000) {
   const start = Date.now();
   while (!check()) { if (Date.now() - start > timeout) throw new Error('File dashboard UI did not finish'); await wait(); }
 }
-function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets = null, assets, wallets, incomplete = 0, getPhrase, dashboardHook, watchFetch } = {}) {
+function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets = null, assets, wallets, incomplete = 0, getPhrase, dashboardHook, watchFetch, market = { currency: 'INR', usdToInr: 83, prices: {} }, knownValue, jobStatus = 'finished', timers } = {}) {
   const dom = new JSDOM(html, { url, runScripts: 'outside-only' });
   const w = dom.window; const $ = id => w.document.getElementById(id);
+  if (timers) { const original = w.setTimeout.bind(w); w.setTimeout = (fn, delay, ...args) => { timers.push(delay); return original(fn, delay, ...args); }; }
   const requests = []; const xhrs = []; const blobs = []; const downloads = []; const confirmations = []; const revoked = [];
   let deriveCalls = 0; let directCalls = 0;
   let currentIncomplete = incomplete;
@@ -57,17 +58,17 @@ function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets 
       const filter = params.get('network'); const assetOffset = Number(params.get('assetOffset')); const walletOffset = Number(params.get('walletOffset'));
       const filtered = filter === 'all' ? allAssets : allAssets.filter(row => row.network === filter);
       return { ok: true, json: async () => ({
-        id: requestedId, status: 'finished', wallets: allWallets.length, total: allWallets.length * 5, completed: allWallets.length * 5,
-        invalid: 0, incomplete: currentIncomplete, phraseMatching: true, retainsPhrases: true,
-        knownValue: allAssets.length * 2, unpriced: 0, assetCount: allAssets.length, filteredAssetCount: filtered.length,
-        assetOffset, walletOffset, network: filter, assets: filtered.slice(assetOffset, assetOffset + 100), walletPage: allWallets.slice(walletOffset, walletOffset + 100),
+        id: requestedId, status: jobStatus, wallets: allWallets.length, total: allWallets.length * 5, completed: allWallets.length * 5,
+        invalid: 0, incomplete: currentIncomplete, phraseMatching: true, retainsPhrases: true, market,
+        knownValue: knownValue ?? allAssets.length * 2, unpriced: 0, assetCount: allAssets.length, filteredAssetCount: filtered.length,
+        assetOffset, walletOffset, network: filter, assets: filtered.slice(assetOffset, assetOffset + 100).map(row => ({ phraseAvailable: true, ...row })), walletPage: allWallets.slice(walletOffset, walletOffset + 100),
       }) };
     }
     if (target.includes('/phrase')) {
       const requested = new URL(target, url).searchParams.get('address');
       return { ok: true, json: async () => ({ phrase: getPhrase ? await getPhrase(requested) : requested === address2 ? phrase2 : phrase }) };
     }
-    if (target.endsWith('/retry')) { currentIncomplete = 0; return { ok: true, json: async () => ({ ok: true }) }; }
+    if (target.endsWith('/retry') || target.endsWith('/refresh-bnb')) { currentIncomplete = 0; return { ok: true, json: async () => ({ ok: true }) }; }
     if (options.method === 'DELETE') return { ok: true, json: async () => ({ ok: true }) };
     throw new Error(`Unexpected request: ${target}`);
   };
@@ -118,7 +119,7 @@ test('selecting a file uploads it directly, shows progress in the main dashboard
   assert.match($('import-status').textContent, /Upload confirmed.*laptop is off/i);
   assert.match($('progress-text').textContent, /Server scan complete/i);
   assert.equal($('wallet-count').textContent, '1'); assert.equal($('asset-count').textContent, '1');
-  assert.equal($('total-value').textContent, '$2.00'); assert.match($('wallet-list').textContent, new RegExp(address));
+  assert.equal($('total-value').textContent, '₹166.00'); assert.match($('wallet-list').textContent, new RegExp(address));
   assert.match($('asset-list').textContent, /Ether/);
   assert.equal($('seed-phrases').value, 'leave pasted text alone');
   assert.equal(ctx.deriveCalls(), 0); assert.equal(ctx.directCalls(), 0);
@@ -336,4 +337,91 @@ test('a legacy stored server job is migrated without exposing its token in the s
   assert.equal($('portfolio-source').value, `file:${id}`);
   assert.doesNotMatch($('portfolio-source').outerHTML, new RegExp(token));
   dom.window.close();
+});
+
+test('file results use one server market snapshot for INR values and per-wallet phrase availability', async () => {
+  const { BUSD_BSC } = require('../lib/prices');
+  const assets = [
+    { address, network: 'bnb', status: 'done', phraseAvailable: true, asset: { name: 'BNB', symbol: 'BNB', type: 'native', rawBalance: '1000000000000000000', decimals: 18, price: null } },
+    { address: address2, network: 'bnb', status: 'done', phraseAvailable: false, asset: { name: 'Binance-Peg BUSD', symbol: 'BUSD', type: 'BEP-20', contract: BUSD_BSC, rawBalance: '2000000000000000000', decimals: 18, price: null } },
+  ];
+  const ctx = setup({ savedJob: true, assets, knownValue: 501.98, market: { currency: 'INR', usdToInr: 80, prices: { bnb: 500, busd: 0.99 } } });
+  const { dom, $ } = ctx;
+  await until(() => $('asset-list').querySelectorAll('tr').length === 2);
+  assert.equal($('total-value').textContent, '₹40,158.40');
+  assert.match($('asset-list').textContent, /₹40,000\.00/); assert.match($('asset-list').textContent, /₹158\.40/);
+  assert.doesNotMatch($('asset-list').textContent, /\bUSD\b|\$/);
+  $('asset-list').querySelectorAll('.asset-open')[1].click();
+  assert.equal($('asset-export-phrase-block').hidden, true);
+  assert.match($('asset-export-note').textContent, /Older scans.*discarded.*re-upload/i);
+  dom.window.close();
+});
+
+test('unavailable INR conversion never displays a dollar or a fabricated total for file results', async () => {
+  const ctx = setup({ savedJob: true, market: { currency: 'INR', usdToInr: null, prices: {} } });
+  const { dom, $ } = ctx;
+  await until(() => $('asset-list').querySelector('tr'));
+  assert.equal($('total-value').textContent, '—');
+  assert.match($('value-note').textContent, /INR exchange rate unavailable/);
+  assert.match($('asset-list').textContent, /INR rate unavailable/);
+  assert.doesNotMatch($('asset-list').textContent, /\bUSD\b|\$/);
+  dom.window.close();
+});
+
+test('the BNB and BUSD refresh is an explicit server-only background operation', async () => {
+  const ctx = setup({ savedJob: true }); const { dom, $, requests, confirmations } = ctx;
+  await until(() => !$('file-refresh-bnb').hidden);
+  $('file-refresh-bnb').click();
+  await until(() => requests.some(item => item.url.endsWith('/refresh-bnb')));
+  assert.match(confirmations[0], /Recheck BNB and BUSD.*EC2/i);
+  const request = requests.find(item => item.url.endsWith('/refresh-bnb'));
+  assert.equal(request.options.method, 'POST'); assert.equal(ctx.directCalls(), 0); assert.equal(ctx.deriveCalls(), 0);
+  assert.ok(requests.every(item => !item.url.startsWith('/api/scan')));
+  dom.window.close();
+});
+
+test('file dashboard includes priced partial assets and explicitly labels retained previous balances', async () => {
+  const rows = [
+    { address, network: 'base', status: 'partial', asset: { ...native, stale: false } },
+    { address, network: 'base', status: 'partial', asset: { name: 'Old token', symbol: 'TOK', type: 'ERC-20', rawBalance: '2', decimals: 0, price: '3', stale: true } },
+  ];
+  const ctx = setup({ savedJob: true, assets: rows, incomplete: 5, knownValue: 8 });
+  const { dom, $ } = ctx;
+  await until(() => $('asset-list').querySelectorAll('.asset-open').length === 2);
+  assert.equal($('total-value').textContent, '₹664.00');
+  assert.match($('value-note').textContent, /previous/i);
+  const rendered = [...$('asset-list').querySelectorAll('tr')];
+  assert.match(rendered[0].textContent, /check incomplete/i);
+  assert.doesNotMatch(rendered[0].textContent, /previous balance/i);
+  assert.match(rendered[1].textContent, /previous balance/i);
+  assert.match($('wallet-list').textContent, /Incomplete/i);
+  assert.equal($('retry-failed').hidden, false);
+  dom.window.close();
+});
+
+test('legacy or pending file balances are not presented as freshly verified', async () => {
+  const rows = [
+    { address, network: 'ethereum', status: 'running', asset: { ...native, stale: false } },
+    { address, network: 'base', status: 'partial', asset: { ...native, name: 'Legacy balance' } },
+  ];
+  const ctx = setup({ savedJob: true, assets: rows, incomplete: 1, knownValue: 4 });
+  const { dom, $ } = ctx;
+  await until(() => $('asset-list').querySelectorAll('.asset-open').length === 2);
+  assert.ok([...$('asset-list').querySelectorAll('tr')].every(row => /previous balance/i.test(row.textContent)));
+  assert.equal($('total-value').textContent, '₹332.00');
+  dom.window.close();
+});
+
+test('small file scans poll promptly while larger scans use the gentler interval', async () => {
+  const smallTimers = [];
+  const small = setup({ savedJob: true, jobStatus: 'scanning', timers: smallTimers });
+  await until(() => small.$('asset-list').querySelector('tr'));
+  assert.ok(smallTimers.includes(1000), 'small jobs poll after one second');
+  small.dom.window.close();
+  const wallets = Array.from({ length: 21 }, (_, i) => ({ address: `0x${i.toString(16).padStart(40, '0')}`, total: 5, completed: 5, incomplete: 0, hasAssets: true }));
+  const largeTimers = [];
+  const large = setup({ savedJob: true, wallets, jobStatus: 'scanning', timers: largeTimers });
+  await until(() => large.$('asset-list').querySelector('tr'));
+  assert.ok(largeTimers.includes(4000), 'larger jobs poll after four seconds');
+  large.dom.window.close();
 });

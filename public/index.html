@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="/style.css">
   <script src="/derive-bundle.js" defer></script>
   <script src="/direct-scan.js" defer></script>
+  <script src="/pricing.js" defer></script>
   <script src="/background.js" defer></script>
   <script src="/app.js" defer></script>
 </head>
@@ -42,7 +43,7 @@
       <div class="heading"><div><div class="heading-context">Your workspace <span aria-hidden="true">/</span> Portfolio</div><h1>Portfolio overview</h1><p>All your tracked wallets, in one place.</p></div><div class="heading-side"><label for="portfolio-source">Portfolio view</label><select id="portfolio-source"><option value="watch">Tracked addresses</option><option value="file:new">Uploaded file</option></select><div class="date-pill">As of <span id="today"></span></div></div></div>
 
       <section class="summary-grid" aria-label="Portfolio overview">
-        <div class="balance-card"><div class="balance-top"><span>Total known value</span><span class="balance-currency">USD</span></div><div class="balance-value" id="total-value">$0.00</div><div class="balance-foot"><span class="balance-indicator" aria-hidden="true"></span><span id="value-note">Add a wallet to get started</span></div></div>
+        <div class="balance-card"><div class="balance-top"><span>Total known value</span><span class="balance-currency">INR</span></div><div class="balance-value" id="total-value">₹0.00</div><div class="balance-foot"><span class="balance-indicator" aria-hidden="true"></span><span id="value-note">Add a wallet to get started</span></div><div class="balance-rate" id="rate-asof" hidden></div></div>
         <div class="stat-card"><div class="stat-label">Wallets tracked <span class="stat-icon" aria-hidden="true">▧</span></div><div class="stat-number" id="wallet-count">0</div><p>Public addresses in this view</p></div>
         <div class="stat-card"><div class="stat-label">Assets found <span class="stat-icon" aria-hidden="true">▤</span></div><div class="stat-number" id="asset-count">0</div><p>Across supported networks</p></div>
       </section>
@@ -51,7 +52,7 @@
         <div class="scan-progress-heading"><div><span class="section-kicker">Balance scan</span><strong id="progress-text">Preparing scan…</strong></div><strong id="progress-percent">0%</strong></div>
         <progress id="progress-bar" value="0" max="100" aria-label="Network scan progress"></progress>
         <div class="progress-detail" id="progress-detail" role="status" aria-live="polite"></div>
-        <div class="scan-errors" id="scan-errors" hidden></div><div class="progress-actions"><button class="retry-button" id="retry-failed" type="button" hidden>Retry failed checks</button><button class="retry-button file-delete" id="file-remove" type="button" hidden>Delete file results &amp; phrases</button></div>
+        <div class="scan-errors" id="scan-errors" hidden></div><div class="progress-actions"><button class="retry-button" id="retry-failed" type="button" hidden>Retry failed checks</button><button class="retry-button" id="file-refresh-bnb" type="button" hidden>Refresh BNB &amp; BUSD</button><button class="retry-button file-delete" id="file-remove" type="button" hidden>Delete file results &amp; phrases</button></div>
       </section>
 
       <section class="quick-import panel" id="import-wallets" aria-labelledby="import-title">
@@ -70,7 +71,7 @@
             <p class="file-help phrase-retention-note">Pasted phrases stay only in this tab’s memory for export until you reload, leave, or remove the wallet. They are not sent to balance providers.</p>
           </form>
         </div>
-        <div class="coverage-notice">Bitcoin (BTC), TRON (TRX), and BNB Smart Chain (BNB) show native balances only, without USD prices. Tokens, NFTs and Bitcoin inscriptions are not scanned. Bitcoin is one address, not the entire wallet. If an Ethereum, Optimism or Arbitrum indexer fails, an RPC may return the ETH balance only; missing token and NFT data remains an incomplete check.</div>
+        <div class="coverage-notice">Bitcoin (BTC) and TRON (TRX) show native balances only. BNB Smart Chain checks native BNB and the canonical Binance-Peg BUSD token, not other BEP-20 tokens or NFTs. Bitcoin inscriptions and TRC-20 tokens are not scanned. For older uploaded results, use “Retry incomplete checks” to check BUSD; use “Refresh BNB &amp; BUSD” to recheck a finished file job. Bitcoin is one address, not the entire wallet. Ethereum, Base, Optimism and Arbitrum may return partial native or token results when a provider fails. Verified assets still appear in the INR total; missing checks remain retryable and retained previous balances are labelled.</div>
         <div class="seed-notice"><strong>Security note</strong><span>A seed phrase gives full control of your funds. Never share it; enter it only on a site and device you trust. This app is experimental and unaudited; do not use phrases protecting valuable funds. Pasted phrases are processed locally; only public addresses are sent to balance providers. A selected .txt file is sent to EC2 through a private SSH tunnel and processed there. EC2 temporarily retains encrypted phrases while scanning and keeps matches with detected balances; the encryption key is stored on the same EC2 volume. Administrators, a compromised server, snapshots or backups may expose phrases; deleting a job is not guaranteed secure erasure. Files derive only the first EVM account (m/44'/60'/0'/0/0), not Bitcoin or TRON addresses.</span></div>
         <div id="import-status" class="import-status" role="status" aria-live="polite" hidden></div>
       </section>
@@ -93,7 +94,7 @@
           <button class="remove-zero-button" id="remove-zero" type="button" hidden>Remove zero-balance wallets</button><p class="zero-help" id="zero-help" hidden>Zero-balance removal is unavailable when coverage is incomplete.</p>
         </section>
       </div>
-      <footer class="dashboard-footer"><span>Walleto is an independent, watch-only dashboard.</span><a href="/wallet">Open self-custody wallet <span aria-hidden="true">↗</span></a></footer>
+      <footer class="dashboard-footer"><span>Walleto is an independent, watch-only dashboard. Market prices by <a href="https://www.coingecko.com/" target="_blank" rel="noopener noreferrer">CoinGecko</a>; INR rates by <a href="https://www.exchangerate-api.com/" target="_blank" rel="noopener noreferrer">ExchangeRate-API</a>. Values are approximate.</span><a href="/wallet">Open self-custody wallet <span aria-hidden="true">↗</span></a></footer>
     </div>
   </main>
 </div>
