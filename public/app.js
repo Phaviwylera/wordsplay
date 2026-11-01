@@ -24,7 +24,7 @@ try {
       const address = keyFor(w.address);
       if (seen.has(address)) return false;
       seen.add(address); return true;
-    }).map(w => w.source === 'seed' ? { address: w.address, source: 'seed' } : { address: w.address });
+    }).map(w => ({ address: w.address, ...(w.source === 'seed' ? { source: 'seed' } : {}), ...(w.hidden === true ? { hidden: true } : {}) }));
   }
 } catch (_) { /* Storage may be unavailable. */ }
 let scanData = { total: 0, completed: 0, failed: 0, assets: [], knownValue: 0, unpriced: 0 };
@@ -53,20 +53,33 @@ let assetGroups = new Map();
 let assetsDirty = false;
 let completedChecks = new Set();
 let walletStates = new Map();
-let zeroWallets = new Set();
 let failedChecks = new Map();
 let scanVersion = 0;
 let loading = false;
 let scanController = null;
 let renderTimer = null;
+let persistTimer = null;
 let storageDirty = false;
 function persist() {
+  if (persistTimer !== null) { clearTimeout(persistTimer); persistTimer = null; }
   try { localStorage.setItem('walleto.wallets', JSON.stringify(wallets)); storageDirty = false; return true; }
   catch (_) { storageDirty = true; return false; }
 }
+function scheduleWalletPersist() {
+  if (persistTimer !== null) return;
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    if (!persist()) importStatus('Browser storage is full or unavailable; wallet and hidden-state changes will only last this session.', true);
+  }, 150);
+}
+function setWalletHidden(wallet, hidden) {
+  if (Boolean(wallet.hidden) === hidden) return;
+  if (hidden) wallet.hidden = true; else delete wallet.hidden;
+  scheduleWalletPersist();
+}
 function importStatus(text, error = false) { const el = $('#import-status'); el.textContent = text; el.hidden = false; el.classList.toggle('error', error); }
 function addAddresses(addresses, source = 'address') {
-  let added = 0; let duplicates = 0; let changed = false;
+  let added = 0; let duplicates = 0; let restored = 0; let changed = false;
   const byAddress = new Map(wallets.map(wallet => [keyFor(wallet.address), wallet]));
   for (const address of addresses) {
     const normalized = keyFor(address);
@@ -74,6 +87,7 @@ function addAddresses(addresses, source = 'address') {
     const existing = byAddress.get(normalized);
     if (existing) {
       duplicates++;
+      if (existing.hidden) { delete existing.hidden; restored++; changed = true; }
       // A seed re-import can relink an existing public address for this tab.
       if (source === 'seed' && existing.source !== 'seed') { existing.source = 'seed'; changed = true; }
       continue;
@@ -86,7 +100,7 @@ function addAddresses(addresses, source = 'address') {
   }
   const saved = (!changed && !storageDirty) || persist();
   if (added) scan('incremental');
-  return { added, duplicates, saved };
+  return { added, duplicates, restored, saved };
 }
 function amount(raw, decimals) {
   try {
@@ -159,12 +173,20 @@ function renderAssetRows(items, rate) {
 function syncFileView() {
   fileScan?.setView({ assetOffset: fileAssetPage * PAGE_SIZE, walletOffset: fileWalletPage * PAGE_SIZE, network: $('#network-filter').value });
 }
+function renderHiddenControls(hidden, total, file) {
+  $('#restore-hidden').hidden = hidden === 0;
+  $('#restore-hidden').disabled = hidden === 0;
+  $('#restore-hidden').textContent = `Restore hidden wallets (${hidden.toLocaleString()})`;
+  $('#zero-help').hidden = total === 0;
+  $('#zero-help').textContent = 'Wallets with no assets found are hidden only after all supported checks succeed. Limited token coverage: other chains, tokens and Bitcoin inscriptions may be missed; incomplete checks stay visible.' + (file ? ' Restoring shows saved addresses and checks; recovery phrases for completed empty file wallets may have been discarded.' : '');
+}
 function renderFile() {
   const state = fileScan?.snapshot() || { hasJob: false, uploading: false, data: null, error: 'Server file import is unavailable.', view: {} };
   const data = state.data;
   $('#asset-description').textContent = 'Server-scanned file results. Select an asset to export its wallet.';
   $('#wallet-description').textContent = 'Addresses derived and scanned on EC2.';
-  const count = data?.wallets || 0; const assetCount = data?.assetCount || 0; const filteredCount = data?.filteredAssetCount || 0;
+  const totalWallets = data?.wallets || 0; const hiddenWallets = data?.hiddenWallets || 0;
+  const count = data?.visibleWallets ?? totalWallets; const assetCount = data?.assetCount || 0; const filteredCount = data?.filteredAssetCount || 0;
   const hasView = Boolean(data && data.network === state.view.network && data.assetOffset === state.view.assetOffset && data.walletOffset === state.view.walletOffset);
   const nextAssetPage = Math.min(fileAssetPage, Math.max(0, Math.ceil(filteredCount / PAGE_SIZE) - 1));
   const nextWalletPage = Math.min(fileWalletPage, Math.max(0, Math.ceil(count / PAGE_SIZE) - 1));
@@ -197,7 +219,7 @@ function renderFile() {
     return `<div class="wallet-row"><span class="wallet-avatar">◈</span><div class="wallet-info"><strong title="${escapeHtml(wallet.address)}">${escapeHtml(wallet.address)}</strong><span class="wallet-scan-state ${css}">${escapeHtml(label)}</span></div></div>`;
   }).join('');
   $('#wallet-empty').hidden = count > 0;
-  if (!count) $('#wallet-empty').innerHTML = `<div class="wallet-illustration" aria-hidden="true">▧</div><div><strong>${state.hasJob || state.uploading ? 'No server wallets yet' : 'No file uploaded'}</strong><p>${state.hasJob || state.uploading ? 'Addresses appear as EC2 processes the file.' : 'Choose a .txt file in Add wallets.'}</p></div>`;
+  if (!count) $('#wallet-empty').innerHTML = `<div class="wallet-illustration" aria-hidden="true">▧</div><div><strong>${hiddenWallets ? 'No visible wallets' : state.hasJob || state.uploading ? 'No server wallets yet' : 'No file uploaded'}</strong><p>${hiddenWallets ? `${hiddenWallets.toLocaleString()} wallet${hiddenWallets === 1 ? '' : 's'} hidden after supported checks. Restore to review.` : state.hasJob || state.uploading ? 'Addresses appear as EC2 processes the file.' : 'Choose a .txt file in Add wallets.'}</p></div>`;
   updatePager('wallet', fileWalletPage, count); updatePager('asset', fileAssetPage, filteredCount);
   $('#empty-state').hidden = items.length > 0;
   if (!items.length) {
@@ -208,7 +230,7 @@ function renderFile() {
   }
   $('#remove-all').disabled = true; $('#remove-all').textContent = `Remove all wallets (${wallets.length})`;
   $('#remove-all').title = 'File results are managed with Delete file results & phrases.';
-  $('#remove-zero').hidden = true; $('#zero-help').hidden = true;
+  renderHiddenControls(hiddenWallets, totalWallets, true);
   $('#refresh').title = 'Reload server results and prices';
   $('#refresh').disabled = !state.hasJob || state.uploading; $('#refresh').classList.toggle('spinning', Boolean(state.loading));
   $('#scan-progress').hidden = !(state.hasJob || state.uploading || state.error);
@@ -220,7 +242,7 @@ function renderFile() {
   $('#scan-errors').hidden = !error; $('#scan-errors').textContent = error;
   $('#scan-status').hidden = !error; $('#scan-status').textContent = error;
   $('#retry-failed').hidden = !(data?.status === 'finished' && data.incomplete > 0); $('#retry-failed').disabled = false; $('#retry-failed').textContent = 'Retry incomplete checks';
-  $('#file-refresh-bnb').hidden = !(data?.status === 'finished' && count > 0);
+  $('#file-refresh-bnb').hidden = !(data?.status === 'finished' && totalWallets > 0);
   $('#file-remove').hidden = !data || !['finished', 'failed'].includes(data.status);
 }
 let sourceOptionsKey = '';
@@ -252,6 +274,8 @@ function render() {
   $('#remove-all').title = 'Remove all watch-list entries';
   $('#retry-failed').textContent = 'Retry failed checks';
   const selected = $('#network-filter').value;
+  const visibleWallets = wallets.filter(wallet => !wallet.hidden);
+  const hiddenWallets = wallets.length - visibleWallets.length;
   const items = materializeAssets();
   const { total, completed, failed, knownValue, unpriced } = scanData;
   const pending = total - completed;
@@ -264,16 +288,18 @@ function render() {
   $('#total-value').textContent = noReliableTotal ? '—' : wallets.length ? inrValue(knownValue, rate) : money(0);
   $('#value-note').textContent = !wallets.length ? 'Add a wallet to get started' : !rate ? (market.loading ? 'Loading INR exchange rate…' : 'INR exchange rate unavailable · refresh to retry') : pending ? (hasStaleBalance ? 'Partial results · includes previous balances' : items.length ? 'Partial results while scanning' : 'Scanning your wallets…') : failed ? (succeeded || items.length ? (hasStaleBalance ? 'Partial results · includes previous balances' : 'Partial results · some networks unavailable') : 'Balance unavailable · scan failed') : unpriced ? `${unpriced} asset${unpriced === 1 ? '' : 's'} without a price` : 'Across all your wallets';
   renderRateTime(market.data);
-  $('#wallet-count').textContent = $('#wallet-badge').textContent = wallets.length;
+  $('#wallet-count').textContent = $('#wallet-badge').textContent = visibleWallets.length;
   $('#asset-count').textContent = items.length;
   $('#asset-badge').textContent = visible.length;
-  $('#wallet-empty').hidden = wallets.length > 0;
-  if (!wallets.length) $('#wallet-empty').innerHTML = '<div class="wallet-illustration" aria-hidden="true">▧</div><div><strong>No wallets added</strong><p>Addresses you add will appear here.</p></div>';
-  walletPage = Math.min(walletPage, Math.max(0, Math.ceil(wallets.length / PAGE_SIZE) - 1));
+  $('#wallet-empty').hidden = visibleWallets.length > 0;
+  if (!visibleWallets.length) $('#wallet-empty').innerHTML = hiddenWallets
+    ? `<div class="wallet-illustration" aria-hidden="true">▧</div><div><strong>No visible wallets</strong><p>${hiddenWallets.toLocaleString()} wallet${hiddenWallets === 1 ? '' : 's'} hidden after supported checks. Restore to review.</p></div>`
+    : '<div class="wallet-illustration" aria-hidden="true">▧</div><div><strong>No wallets added</strong><p>Addresses you add will appear here.</p></div>';
+  walletPage = Math.min(walletPage, Math.max(0, Math.ceil(visibleWallets.length / PAGE_SIZE) - 1));
   assetPage = Math.min(assetPage, Math.max(0, Math.ceil(visible.length / PAGE_SIZE) - 1));
-  $('#wallet-list').innerHTML = wallets.slice(walletPage * PAGE_SIZE, (walletPage + 1) * PAGE_SIZE).map(wallet => { const state = walletScanLabel(wallet); return `<div class="wallet-row"><span class="wallet-avatar">◈</span><div class="wallet-info"><strong title="${escapeHtml(wallet.address)}">${escapeHtml(wallet.address)}</strong><span class="wallet-scan-state ${state.css}">${escapeHtml(state.label)}</span></div><button class="remove-wallet" data-address="${escapeHtml(wallet.address)}" aria-label="Remove ${escapeHtml(wallet.address)}" title="Remove wallet">×</button></div>`; }).join('');
+  $('#wallet-list').innerHTML = visibleWallets.slice(walletPage * PAGE_SIZE, (walletPage + 1) * PAGE_SIZE).map(wallet => { const state = walletScanLabel(wallet); return `<div class="wallet-row"><span class="wallet-avatar">◈</span><div class="wallet-info"><strong title="${escapeHtml(wallet.address)}">${escapeHtml(wallet.address)}</strong><span class="wallet-scan-state ${state.css}">${escapeHtml(state.label)}</span></div><button class="remove-wallet" data-address="${escapeHtml(wallet.address)}" aria-label="Remove ${escapeHtml(wallet.address)}" title="Remove wallet">×</button></div>`; }).join('');
   renderAssetRows(visible.slice(assetPage * PAGE_SIZE, (assetPage + 1) * PAGE_SIZE), rate);
-  updatePager('wallet', walletPage, wallets.length);
+  updatePager('wallet', walletPage, visibleWallets.length);
   updatePager('asset', assetPage, visible.length);
   $('#empty-state').hidden = visible.length > 0;
   const empty = $('#empty-state');
@@ -312,24 +338,23 @@ function render() {
     errorDetails.textContent = `${details}. Failed checks are not treated as zero.`;
   }
   $('#retry-failed').hidden = loading || !failedChecks.size;
-  const eligible = zeroWallets.size;
-  $('#remove-zero').hidden = !wallets.length;
-  $('#remove-zero').disabled = loading || eligible === 0;
-  $('#zero-help').hidden = !wallets.length;
-  $('#zero-help').textContent = 'Unavailable while some supported networks have limited token coverage; other tokens and inscriptions may be missed. Failed scans are never treated as zero.';
-  $('#remove-zero').textContent = `Remove zero-balance wallets (${eligible})`;
+  renderHiddenControls(hiddenWallets, wallets.length, false);
   $('#remove-all').disabled = !wallets.length;
   $('#remove-all').textContent = `Remove all wallets (${wallets.length})`;
   $('#refresh').title = 'Refresh balances and prices';
   $('#refresh').classList.toggle('spinning', loading);
   $('#refresh').disabled = loading || !wallets.length;
 }
-function recordWalletScan(wallet, hasAssets, failed, network) {
+function recordWalletScan(wallet, failed, network) {
   const address = keyFor(wallet.address);
   const state = walletStates.get(address) || { done: 0, failed: 0, hasAssets: false, limited: false };
-  state.done++; state.failed += failed ? 1 : 0; state.hasAssets ||= hasAssets; state.limited ||= limitedNetworks.has(network);
+  state.done++; state.failed += failed ? 1 : 0; state.limited ||= limitedNetworks.has(network);
+  // Include previous verified assets from other networks and missing components.
+  // Unknown or stale data is never used as evidence of an empty wallet.
+  state.hasAssets = networksFor(wallet.address).some(name => (assetGroups.get(checkKey(wallet, name)) || []).length > 0);
   walletStates.set(address, state);
-  if (state.done === networksFor(wallet.address).length && !state.failed && !state.hasAssets && !state.limited) zeroWallets.add(address);
+  if (failed || state.hasAssets) setWalletHidden(wallet, false);
+  else if (state.done === networksFor(wallet.address).length && !state.failed) setWalletHidden(wallet, true);
 }
 // Keep requests bounded for large imports. Cancel the previous scan when the
 // tracked address list changes, and never send recovery phrases to an indexer.
@@ -419,7 +444,6 @@ function pruneWatchState(scanWallets) {
   for (const key of completedChecks) if (!valid.has(owner(key))) completedChecks.delete(key);
   for (const [key, check] of failedChecks) if (!valid.has(keyFor(check.wallet.address))) failedChecks.delete(key);
   for (const address of walletStates.keys()) if (!valid.has(address)) walletStates.delete(address);
-  for (const address of zeroWallets) if (!valid.has(address)) zeroWallets.delete(address);
 }
 async function scan(mode = false) {
   watchInitialized = true;
@@ -442,8 +466,10 @@ async function scan(mode = false) {
     }
     failedChecks.clear();
   } else if (!incremental) {
-    completedChecks.clear(); walletStates = new Map(); zeroWallets = new Set(); failedChecks = new Map();
+    completedChecks.clear(); walletStates = new Map(); failedChecks = new Map();
   }
+  // A hidden wallet becomes visible while any of its networks is rechecked.
+  for (const wallet of scanWallets) if (networksFor(wallet.address).some(network => !completedChecks.has(checkKey(wallet, network)))) setWalletHidden(wallet, false);
   scanData.total = scanWallets.reduce((total, wallet) => total + networksFor(wallet.address).length, 0);
   scanData.completed = completedChecks.size; scanData.failed = failedChecks.size;
   // Existing results remain visible while their checks are queued, and are
@@ -509,21 +535,21 @@ async function scan(mode = false) {
       try {
         const data = await watchQueue.run(network, () => checkedRequest(wallet, network), signal);
         if (version !== scanVersion || signal.aborted) return;
-        const { coverage, hasAssets } = acceptSnapshot(wallet, network, data, 'done');
+        const { coverage } = acceptSnapshot(wallet, network, data, 'done');
         if (coverage.partial) {
           for (const asset of assetGroups.get(key) || []) asset.checkStatus = 'partial';
           scanData.failed++;
           failedChecks.set(key, { wallet, network, reason: !coverage.native ? 'native' : network === 'bnb' ? 'busd' : 'partial' });
         }
         completedChecks.add(key); scanData.completed++;
-        recordWalletScan(wallet, hasAssets, coverage.partial, network);
+        recordWalletScan(wallet, coverage.partial, network);
       } catch (error) {
         if (version !== scanVersion || signal.aborted) return;
         const earlier = assetGroups.get(key) || [];
         for (const asset of earlier) { asset.stale = true; asset.checkStatus = 'partial'; }
         scanData.failed++; scanData.completed++; completedChecks.add(key);
         failedChecks.set(key, { wallet, network, reason: failureReason(error) });
-        recordWalletScan(wallet, earlier.length > 0, true, network);
+        recordWalletScan(wallet, true, network);
       }
       if (version === scanVersion && !signal.aborted) scheduleRender();
     }
@@ -535,6 +561,7 @@ async function scan(mode = false) {
   await Promise.all(workers);
   if (version === scanVersion) {
     if (renderTimer !== null) { clearTimeout(renderTimer); renderTimer = null; }
+    if (persistTimer !== null && !persist()) importStatus('Browser storage is full or unavailable; wallet and hidden-state changes will only last this session.', true);
     loading = false; render();
   }
 }
@@ -727,6 +754,7 @@ $('#asset-export-download').addEventListener('click', async () => {
 });
 document.addEventListener('visibilitychange', () => { if (document.hidden && activeExport) hideExportPhrase(); });
 window.addEventListener('pagehide', () => {
+  if (persistTimer !== null) persist();
   phraseSessionVersion++;
   if (pendingPhraseImport) pendingPhraseImport.clear();
   sessionPhrases.clear();
@@ -746,7 +774,7 @@ $('#address-form').addEventListener('submit', event => {
   const result = addAddresses([address]);
   viewMode = 'watch'; if (!watchInitialized) scan('incremental'); else render();
   field.value = '';
-  importStatus(!result.saved ? 'Address tracked for this session, but browser storage is unavailable.' : result.duplicates ? 'This address is already being tracked.' : 'Address added. Scanning balances…', !result.saved);
+  importStatus(!result.saved ? 'Address tracked for this session, but browser storage is unavailable.' : result.restored ? 'This previously hidden address is now visible.' : result.duplicates ? 'This address is already being tracked.' : 'Address added. Scanning balances…', !result.saved);
 });
 $('#generate-phrase').addEventListener('click', () => {
   try {
@@ -790,10 +818,10 @@ $('#seed-form').addEventListener('submit', async event => {
       const extra = result.invalidCount > 20 ? ` and ${result.invalidCount - 20} more` : '';
       problems.push(`Pasted text: invalid line${result.invalid.length === 1 ? '' : 's'} ${shown}${extra}`);
     }
-    const { added, duplicates, saved } = addAddresses(result.addresses, 'seed');
+    const { added, duplicates, restored, saved } = addAddresses(result.addresses, 'seed');
     for (const [key, phrase] of importedPhrases) sessionPhrases.set(key, phrase);
     viewMode = 'watch'; if (!watchInitialized) scan(); else render();
-    const parts = [`${added} wallet${added === 1 ? '' : 's'} added`, ...(duplicates ? [`${duplicates} duplicate${duplicates === 1 ? '' : 's'} skipped`] : []), ...problems];
+    const parts = [`${added} wallet${added === 1 ? '' : 's'} added`, ...(duplicates ? [`${duplicates} duplicate${duplicates === 1 ? '' : 's'} skipped`] : []), ...(restored ? [`${restored} hidden wallet${restored === 1 ? '' : 's'} restored`] : []), ...problems];
     if (!saved) parts.push('Browser storage is full or unavailable; wallet changes will only last this session');
     if (!result.addresses.length && !problems.length) parts.push('No phrases found');
     const next = importedPhrases.size
@@ -837,16 +865,16 @@ $('#remove-all').addEventListener('click', () => {
   scan(); // Abort in-flight requests and invalidate any late results.
   importStatus(saved ? `Removed all ${count} wallet${count === 1 ? '' : 's'} from the watch list.` : `Removed all ${count} wallet${count === 1 ? '' : 's'} for this session, but browser storage could not save the change; wallets may return after a reload.`, !saved);
 });
-$('#remove-zero').addEventListener('click', () => {
-  if (loading || !zeroWallets.size) return;
-  const count = zeroWallets.size;
-  if (!confirm(`Remove ${count} wallet${count === 1 ? '' : 's'} with no assets found on their completely scanned networks? This removes only the watch list entries, not the wallets or funds. Other chains and unindexed assets are not checked.`)) return;
-  cancelPendingPhraseImport();
-  wallets = wallets.filter(wallet => !zeroWallets.has(keyFor(wallet.address)));
-  if (activeExport && zeroWallets.has(activeExport.key)) closeAssetExport(false);
-  for (const address of zeroWallets) sessionPhrases.delete(address);
-  const saved = persist(); scan('incremental');
-  importStatus(saved ? `Removed ${count} zero-balance wallet${count === 1 ? '' : 's'} from the watch list.` : `Removed ${count} wallet${count === 1 ? '' : 's'} for this session, but browser storage could not save the change.`, !saved);
+$('#restore-hidden').addEventListener('click', () => {
+  if (viewMode === 'file') {
+    fileWalletPage = 0; syncFileView(); fileScan?.restoreHidden(); return;
+  }
+  const hidden = wallets.filter(wallet => wallet.hidden);
+  if (!hidden.length) return;
+  for (const wallet of hidden) delete wallet.hidden;
+  walletPage = 0;
+  const saved = persist(); render();
+  importStatus(saved ? `Restored ${hidden.length} hidden wallet${hidden.length === 1 ? '' : 's'} to the watch list.` : 'Wallets restored for this session, but browser storage could not save the change.', !saved);
 });
 $('#portfolio-source').addEventListener('change', event => {
   const selected = event.target.value;

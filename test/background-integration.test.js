@@ -3,7 +3,6 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const http = require('node:http');
 const { spawn } = require('node:child_process');
 const { JSDOM } = require('jsdom');
 const esbuild = require('esbuild');
@@ -35,8 +34,6 @@ function page(origin, savedJobs) {
 
 test('real HTTP file upload continues after the browser disconnects and reconnects to dashboard results', { timeout: 30000 }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-e2e-'));
-  const probe = http.createServer(); await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
-  const port = probe.address().port; await new Promise(resolve => probe.close(resolve));
   // jsdom omits Origin on same-origin POSTs; real browsers send it. Add it in
   // this test-only transport shim. The HTTP security tests separately verify
   // that the real endpoint rejects missing and cross-origin upload headers.
@@ -44,12 +41,12 @@ test('real HTTP file upload continues after the browser disconnects and reconnec
     scanner.scanWallet=async (_address,network)=>{await new Promise(r=>setTimeout(r,500));const assets=[{name:network==='bnb'?'BNB':'Ether',symbol:network==='bnb'?'BNB':'ETH',type:'native',rawBalance:'1000000000000000000',decimals:18,price:'2'}];if(network==='bnb')assets.push({name:'Binance-Peg BUSD',symbol:'BUSD',type:'BEP-20',contract:'0xe9e7cea3dedca5984780bafc599bd69add087d56',rawBalance:'2000000000000000000',decimals:18,price:null});return {assets,coverage:network==='bnb'?'bnb-and-busd':'complete'}};
     require('./lib/market').getMarket=async()=>({currency:'INR',usdToInr:83,prices:{bnb:600,busd:0.97}});
     require('./server');`;
-  const child = spawn(process.execPath, ['-e', source], { cwd: process.cwd(), env: { ...process.env, PORT: String(port), WALLETO_BACKGROUND_DIR: dir }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, ['-e', source], { cwd: process.cwd(), env: { ...process.env, PORT: '0', WALLETO_BACKGROUND_DIR: dir }, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = ''; let first; let reopened; let reconnected;
   try {
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('server startup timeout')), 5000);
-      child.stdout.on('data', chunk => { output += chunk; if (output.includes('Wallet viewer running')) { clearTimeout(timeout); resolve(); } });
+    const port = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('server startup timeout')), 10000);
+      child.stdout.on('data', chunk => { output += chunk; const match = output.match(/Wallet viewer running on port (\d+)/); if (match) { clearTimeout(timeout); resolve(Number(match[1])); } });
       child.on('exit', code => { clearTimeout(timeout); reject(new Error(`server exited: ${code}`)); });
     });
     const origin = `http://127.0.0.1:${port}/`;
@@ -106,18 +103,16 @@ test('real HTTP file upload continues after the browser disconnects and reconnec
 
 test('a finished file shows balances before a slow INR quote and refreshes its total when pricing arrives', { timeout: 15000 }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-e2e-prices-'));
-  const probe = http.createServer(); await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
-  const port = probe.address().port; await new Promise(resolve => probe.close(resolve));
   const source = `let quote=null;let waiters=[];process.on('message',()=>{quote={currency:'INR',usdToInr:83,prices:{}};for(const resolve of waiters)resolve(quote);waiters=[]});require('./lib/market').getMarket=()=>quote?Promise.resolve(quote):new Promise(resolve=>waiters.push(resolve));
     require('./lib/scanner').scanWallet=async (_address,network)=>({assets:[{name:'Native',symbol:'ETH',type:'native',rawBalance:'1000000000000000000',decimals:18,price:'2'},...(network==='bnb'?[{name:'BUSD',symbol:'BUSD',type:'BEP-20',contract:'0xe9e7cea3dedca5984780bafc599bd69add087d56',rawBalance:'0',decimals:18,price:null}]:[])],...(network==='bnb'?{coverage:'bnb-and-busd'}:{})});
     require('./server');`;
-  const child = spawn(process.execPath, ['-e', source], { cwd: process.cwd(), env: { ...process.env, PORT: String(port), WALLETO_BACKGROUND_DIR: dir }, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+  const child = spawn(process.execPath, ['-e', source], { cwd: process.cwd(), env: { ...process.env, PORT: '0', WALLETO_BACKGROUND_DIR: dir }, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
   let dom;
   try {
-    await new Promise((resolve, reject) => {
-      let output = ''; const timer = setTimeout(() => reject(new Error('server startup timeout')), 5000);
-      child.stdout.on('data', chunk => { output += chunk; if (output.includes('Wallet viewer running')) { clearTimeout(timer); resolve(); } });
-      child.on('exit', code => reject(new Error(`server exited: ${code}`)));
+    const port = await new Promise((resolve, reject) => {
+      let output = ''; const timer = setTimeout(() => reject(new Error('server startup timeout')), 10000);
+      child.stdout.on('data', chunk => { output += chunk; const match = output.match(/Wallet viewer running on port (\d+)/); if (match) { clearTimeout(timer); resolve(Number(match[1])); } });
+      child.on('exit', code => { clearTimeout(timer); reject(new Error(`server exited: ${code}`)); });
     });
     const origin = `http://127.0.0.1:${port}/`;
     const uploaded = await fetch(`${origin}api/background/jobs`, { method: 'POST', headers: { Origin: origin.slice(0, -1), 'Content-Type': 'application/octet-stream' }, body: phrase });
@@ -133,7 +128,50 @@ test('a finished file shows balances before a slow INR quote and refreshes its t
     await until(() => w.document.getElementById('total-value').textContent === '₹830.00', 8000);
     assert.equal(w.document.querySelectorAll('#asset-list .asset-open').length, 5);
   } finally {
-    dom?.window.close(); child.kill('SIGTERM'); await new Promise(resolve => child.once('exit', resolve));
+    dom?.window.close();
+    if (child.exitCode === null && child.signalCode === null) { child.kill('SIGTERM'); await new Promise(resolve => child.once('exit', resolve)); }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the private dashboard restores a hidden file wallet without deleting its checks', { timeout: 30000 }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-e2e-hidden-'));
+  const source = `require('./lib/market').getMarket=async()=>({currency:'INR',usdToInr:83,prices:{}});
+    require('./lib/scanner').scanWallet=async (_address,network)=>({assets:[{name:'Native',symbol:'ETH',type:'native',rawBalance:'0',decimals:18,price:null},...(network==='bnb'?[{name:'BUSD',symbol:'BUSD',type:'BEP-20',contract:'0xe9e7cea3dedca5984780bafc599bd69add087d56',rawBalance:'0',decimals:18,price:null}]:[])],...(network==='bnb'?{coverage:'bnb-and-busd'}:{})});
+    require('./server');`;
+  const child = spawn(process.execPath, ['-e', source], { cwd: process.cwd(), env: { ...process.env, PORT: '0', WALLETO_BACKGROUND_DIR: dir }, stdio: ['ignore', 'pipe', 'pipe'] });
+  let dom; let reopened;
+  try {
+    const port = await new Promise((resolve, reject) => {
+      let output = ''; const timer = setTimeout(() => reject(new Error('server startup timeout')), 10000);
+      child.stdout.on('data', chunk => { output += chunk; const match = output.match(/Wallet viewer running on port (\d+)/); if (match) { clearTimeout(timer); resolve(Number(match[1])); } });
+      child.on('exit', code => { clearTimeout(timer); reject(new Error(`server exited: ${code}`)); });
+    });
+    const origin = `http://127.0.0.1:${port}/`;
+    const uploaded = await fetch(`${origin}api/background/jobs`, { method: 'POST', headers: { Origin: origin.slice(0, -1), 'Content-Type': 'application/octet-stream' }, body: phrase });
+    assert.equal(uploaded.status, 202);
+    const { id, token } = await uploaded.json();
+    const authorization = { Authorization: `Bearer ${token}` };
+    let status;
+    await until(async () => { status = await (await fetch(`${origin}api/background/jobs/${id}`, { headers: authorization })).json(); return status.status === 'finished'; });
+    assert.equal(status.hiddenWallets, 1); assert.equal(status.visibleWallets, 0); assert.equal(status.completed, 5);
+    const saved = JSON.stringify([{ id, token }]);
+    dom = page(origin, saved); const w = dom.window;
+    await until(() => !w.document.getElementById('restore-hidden').hidden);
+    assert.equal(w.document.getElementById('wallet-count').textContent, '0');
+    assert.match(w.document.getElementById('zero-help').textContent, /recovery phrases.*discarded/i);
+    w.document.getElementById('restore-hidden').click();
+    await until(() => w.document.getElementById('wallet-count').textContent === '1');
+    assert.match(w.document.getElementById('wallet-list').textContent, new RegExp(address));
+    const results = await (await fetch(`${origin}api/background/jobs/${id}/results`, { headers: authorization })).json();
+    assert.equal(results.checks.length, 5); assert.equal(results.hiddenWallets, 0);
+    dom.window.close();
+    reopened = page(origin, saved);
+    await until(() => reopened.window.document.getElementById('wallet-count').textContent === '1');
+    assert.equal(reopened.window.document.getElementById('restore-hidden').hidden, true);
+  } finally {
+    dom?.window.close(); reopened?.window.close();
+    if (child.exitCode === null && child.signalCode === null) { child.kill('SIGTERM'); await new Promise(resolve => child.once('exit', resolve)); }
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

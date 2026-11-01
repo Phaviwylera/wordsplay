@@ -229,6 +229,7 @@ test('the dashboard pages positive assets and wallet states on the server withou
     retry = true; assert.equal(jobs.retry(id, token), true); await finished(jobs, id, token);
     const final = jobs.dashboard(id, token);
     assert.equal(final.incomplete, 0); assert.equal(final.assetCount, 106); assert.equal(final.knownValue, 620);
+    assert.equal(final.visibleWallets, 1); assert.equal(final.hiddenWallets, 1);
     const db = new DatabaseSync(path.join(dir, 'jobs.sqlite'));
     const plan = db.prepare('EXPLAIN QUERY PLAN SELECT address,network FROM checks WHERE job = ? AND has_positive = 1').all(id);
     assert.match(JSON.stringify(plan), /checks_positive_idx/);
@@ -242,9 +243,13 @@ test('the dashboard pages positive assets and wallet states on the server withou
     db.exec('COMMIT'); db.close();
     const walletFirst = jobs.dashboard(id, token, { walletOffset: 0 });
     const walletLast = jobs.dashboard(id, token, { walletOffset: 100 });
-    assert.equal(walletFirst.wallets, 107); assert.equal(walletFirst.walletPage.length, 100);
-    assert.equal(walletLast.walletPage.length, 7);
-    assert.equal(new Set([...walletFirst.walletPage, ...walletLast.walletPage].map(item => item.address)).size, 107);
+    assert.equal(walletFirst.wallets, 107); assert.equal(walletFirst.visibleWallets, 106); assert.equal(walletFirst.hiddenWallets, 1);
+    assert.equal(walletFirst.walletPage.length, 100); assert.equal(walletLast.walletPage.length, 6);
+    assert.equal(new Set([...walletFirst.walletPage, ...walletLast.walletPage].map(item => item.address)).size, 106);
+    assert.equal(jobs.restoreHidden(id, token), 1);
+    const restoredLast = jobs.dashboard(id, token, { walletOffset: 100 });
+    assert.equal(restoredLast.visibleWallets, 107); assert.equal(restoredLast.hiddenWallets, 0);
+    assert.equal(restoredLast.walletPage.length, 7);
   } finally { jobs.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -351,7 +356,7 @@ test('backfills positive balances in legacy jobs where the column already existe
     assert.equal(jobs.dashboard(id, token).assets[0].address, address);
     assert.equal(jobs.dashboard(id, token).phraseMatching, false);
     const migrated = new DatabaseSync(path.join(dir, 'jobs.sqlite'));
-    assert.equal(migrated.prepare('SELECT COUNT(*) AS count FROM background_migrations').get().count, 2);
+    assert.equal(migrated.prepare('SELECT COUNT(*) AS count FROM background_migrations').get().count, 3);
     migrated.close();
   } finally { jobs.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });

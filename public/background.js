@@ -6,7 +6,7 @@
   const storageKey = 'walleto.background-jobs';
   const legacyStorageKey = 'walleto.background-job';
   let jobs = []; let job = null; let timer = null; let requestVersion = 0; let uploading = false;
-  let storageWarning = false; let refreshingBnb = false;
+  let storageWarning = false; let refreshingBnb = false; let restoringHidden = false;
   const view = { assetOffset: 0, walletOffset: 0, network: 'all' };
   const state = { data: null, error: '', loading: false, uploadPercent: 0 };
   const validJob = item => item && /^[a-f0-9]{64}$/.test(item.id || '') && /^[a-f0-9]{64}$/.test(item.token || '');
@@ -65,6 +65,7 @@
         || counts.some(key => !Number.isSafeInteger(data[key]) || data[key] < 0)
         || data.completed > data.total || data.incomplete > data.completed
         || !(data.knownValue === null || Number.isFinite(data.knownValue))
+        || ((data.visibleWallets !== undefined || data.hiddenWallets !== undefined) && (!Number.isSafeInteger(data.visibleWallets) || data.visibleWallets < 0 || !Number.isSafeInteger(data.hiddenWallets) || data.hiddenWallets < 0 || data.visibleWallets + data.hiddenWallets !== data.wallets))
         || data.assetOffset !== view.assetOffset || data.walletOffset !== view.walletOffset || data.network !== view.network
         || !['importing', 'scanning', 'finished', 'failed'].includes(data.status)) throw new Error('Invalid dashboard response');
       state.data = data; state.error = ''; state.loading = false;
@@ -102,6 +103,22 @@
     if (!job || !state.data || state.data.status !== 'finished' || !state.data.incomplete) return;
     try { await request('/retry', 'POST'); importStatus('Retrying incomplete checks on the server.'); refresh(); }
     catch (_) { importStatus('Could not retry the server checks. Reconnect the SSH tunnel and try again.', true); }
+  }
+  async function restoreHidden() {
+    if (restoringHidden || !job || !state.data?.hiddenWallets) return;
+    restoringHidden = true; const current = job;
+    try {
+      const result = await request('/restore-hidden', 'POST');
+      if (current !== job) return;
+      if (!Number.isSafeInteger(result.restored) || result.restored < 0) throw new Error('Invalid restore response');
+      importStatus(`Restored ${result.restored.toLocaleString()} hidden wallet${result.restored === 1 ? '' : 's'} to this file view.`);
+      await refresh();
+    } catch (_) {
+      if (current === job) {
+        state.error = 'Could not restore hidden wallets. Reconnect the private EC2 tunnel and try again.';
+        importStatus(state.error, true); notify();
+      }
+    } finally { restoringHidden = false; }
   }
   async function refreshBnb() {
     if (refreshingBnb || !job || state.data?.status !== 'finished' || !state.data.wallets) return;
@@ -185,6 +202,6 @@
   window.addEventListener('beforeunload', event => { if (uploading) { event.preventDefault(); event.returnValue = ''; } });
   window.addEventListener('pagehide', () => { requestVersion++; clearTimeout(timer); });
   window.addEventListener('pageshow', event => { if (event.persisted && job) refresh(); });
-  window.fileScan = { snapshot, setView, select, refresh, refreshBnb, retry, remove, phrase };
+  window.fileScan = { snapshot, setView, select, refresh, restoreHidden, refreshBnb, retry, remove, phrase };
   if (job) refresh();
 })();
