@@ -539,3 +539,38 @@ test('a mismatched provider wallet cannot create an asset or expose a recovery p
     assert.equal(jobs.phrase(id, token, address), null, 'no positive verified balance means no phrase export');
   } finally { jobs.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('configured EC2 worker limits increase parallel checks without exceeding either bound', { timeout: 15000 }, async () => {
+  const { readWorkerLimits } = require('../lib/worker-config');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-worker-config-'));
+  const phrases = Array.from({ length: 5 }, (_, index) => Mnemonic.fromEntropy(`0x${(index + 1).toString(16).padStart(32, '0')}`).phrase);
+  const held = []; const activeByNetwork = {}; const peaks = {}; let active = 0; let peak = 0; let hold = true;
+  const limits = readWorkerLimits({ WALLETO_SCAN_CONCURRENCY: '20', WALLETO_SCAN_PER_NETWORK: '4' });
+  const jobs = createBackgroundJobs(dir, { ...limits, scan: async (_address, network) => {
+    active++; peak = Math.max(peak, active); activeByNetwork[network] = (activeByNetwork[network] || 0) + 1;
+    peaks[network] = Math.max(peaks[network] || 0, activeByNetwork[network]);
+    try {
+      if (hold) await new Promise(resolve => held.push(resolve));
+      return completeResult(network, [{ type: 'native', name: network, symbol: network === 'bnb' ? 'BNB' : 'ETH', rawBalance: '1', decimals: 18, price: null }]);
+    } finally { active--; activeByNetwork[network]--; }
+  } });
+  let id, token;
+  try {
+    ({ id, token } = await jobs.receive(Readable.from(phrases.join('\n'))));
+    for (let i = 0; i < 200 && held.length < 20; i++) await wait();
+    assert.equal(held.length, 20, 'configured worker reaches the new global limit');
+    assert.equal(peak, 20);
+    assert.deepEqual(Object.values(peaks).sort(), [4, 4, 4, 4, 4]);
+    const status = jobs.status(id, token);
+    assert.equal(status.status, 'scanning'); assert.equal(status.completed, 0);
+    hold = false; held.forEach(resolve => resolve());
+    const final = await finished(jobs, id, token);
+    assert.equal(final.completed, 25); assert.equal(final.incomplete, 0);
+    assert.ok(peak <= 20);
+    assert.ok(Object.values(peaks).every(value => value <= 4));
+  } finally {
+    hold = false; held.forEach(resolve => resolve());
+    if (id) await finished(jobs, id, token).catch(() => {});
+    jobs.close(); fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

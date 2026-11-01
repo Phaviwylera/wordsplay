@@ -7,7 +7,9 @@ const market = require('./lib/market');
 const publicDir = path.join(__dirname, 'public');
 // Enable only on a loopback-published EC2 container accessed by SSH tunnel.
 // The persistent directory must be private to the service account.
-const jobs = process.env.WALLETO_BACKGROUND_DIR ? require('./lib/background-jobs').createBackgroundJobs(process.env.WALLETO_BACKGROUND_DIR) : null;
+const workerLimits = process.env.WALLETO_BACKGROUND_DIR ? require('./lib/worker-config').readWorkerLimits(process.env) : null;
+const jobs = workerLimits ? require('./lib/background-jobs').createBackgroundJobs(process.env.WALLETO_BACKGROUND_DIR, workerLimits) : null;
+if (workerLimits) console.log(`Background scanner limits: ${workerLimits.concurrency} concurrent checks, ${workerLimits.perNetworkConcurrency} per network.`);
 // Balance pages must not wait several seconds on optional price feeds. The
 // browser refreshes the page when its coalesced market request completes.
 async function dashboardMarket() {
