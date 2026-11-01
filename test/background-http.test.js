@@ -5,6 +5,8 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
+const { controlRequest } = require('../lib/recover-file-job');
+const { socketPath } = require('../lib/file-job-recovery');
 
 function request(port, method, resource, headers = {}, body = '') {
   return new Promise((resolve, reject) => {
@@ -108,4 +110,40 @@ test('slow market providers do not block the EC2 balance page; later refresh inc
     await stopChild(child);
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('lost browser access is restored only with an admin-issued, same-origin, one-time code', { timeout: 20000 }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-http-recover-'));
+  const source = "require('./lib/market').getMarket=async()=>({currency:'INR',usdToInr:83,prices:{}});require('./server');";
+  const child = spawn(process.execPath, ['-e', source], { env: { ...process.env, PORT: '0', WALLETO_BACKGROUND_DIR: dir }, stdio: ['ignore', 'pipe', 'pipe'] });
+  try {
+    const port = await childPort(child); const host = `127.0.0.1:${port}`;
+    const uploadHeaders = { host, origin: `http://${host}`, 'content-type': 'application/octet-stream' };
+    const upload = await request(port, 'POST', '/api/background/jobs', uploadHeaders, '');
+    assert.equal(upload.status, 202);
+    const previous = upload.body;
+    for (let i = 0; i < 100 && !fs.existsSync(socketPath(dir)); i++) await new Promise(resolve => setTimeout(resolve, 20));
+    const listing = await controlRequest(socketPath(dir), { action: 'list' });
+    assert.equal(listing.ok, true); assert.equal(listing.jobs.length, 1); assert.equal(listing.jobs[0].id, previous.id);
+    const issued = await controlRequest(socketPath(dir), { action: 'issue', id: previous.id });
+    assert.match(issued.code, /^[a-f0-9]{64}$/);
+    const headers = { host, origin: `http://${host}`, 'content-type': 'application/json' };
+    const payload = JSON.stringify({ code: issued.code });
+    assert.equal((await request(port, 'GET', '/api/background/reconnect', { host })).status, 404);
+    assert.equal((await request(port, 'GET', '/api/background/jobs', { host })).status, 404, 'the HTTP API does not list jobs');
+    assert.equal((await request(port, 'POST', '/api/background/reconnect', { ...headers, host: 'example.com' }, payload)).status, 403);
+    assert.equal((await request(port, 'POST', '/api/background/reconnect', { ...headers, origin: 'http://evil.example' }, payload)).status, 403);
+    assert.equal((await request(port, 'POST', '/api/background/reconnect', { host, 'content-type': 'application/json' }, payload)).status, 403);
+    assert.equal((await request(port, 'POST', '/api/background/reconnect', { ...headers, 'content-type': 'text/plain' }, payload)).status, 403);
+    assert.equal((await request(port, 'POST', '/api/background/reconnect', headers, JSON.stringify({ code: '0'.repeat(64) }))).status, 404);
+    assert.equal((await request(port, 'POST', '/api/background/reconnect', headers, JSON.stringify({ code: [issued.code] }))).status, 404);
+    assert.equal((await request(port, 'POST', '/api/background/reconnect', headers, 'x'.repeat(1100))).status, 413);
+    const recovered = await request(port, 'POST', '/api/background/reconnect', headers, payload);
+    assert.equal(recovered.status, 200); assert.equal(recovered.body.id, previous.id);
+    assert.match(recovered.body.token, /^[a-f0-9]{64}$/); assert.notEqual(recovered.body.token, previous.token);
+    assert.equal((await request(port, 'POST', '/api/background/reconnect', headers, payload)).status, 404, 'the code is consumed');
+    assert.equal((await request(port, 'GET', `/api/background/jobs/${previous.id}`, { host, authorization: `Bearer ${previous.token}` })).status, 404);
+    const status = await request(port, 'GET', `/api/background/jobs/${previous.id}`, { host, authorization: `Bearer ${recovered.body.token}` });
+    assert.equal(status.status, 200); assert.equal(status.body.id, previous.id);
+  } finally { await stopChild(child); fs.rmSync(dir, { recursive: true, force: true }); }
 });

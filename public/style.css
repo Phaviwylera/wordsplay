@@ -101,6 +101,13 @@ h1,h2,h3,p{margin:0}
 .quick-form .file-import p:last-child{margin:9px 0 0}
 .file-import-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
 .file-import-actions span{color:#777584;font-size:11px}
+.file-reconnect{margin-top:12px;padding-top:10px;border-top:1px solid #e2deef}
+.file-reconnect summary{color:#514984;font-size:12px;font-weight:700;cursor:pointer}
+.file-reconnect code{display:block;overflow-x:auto;margin:8px 0;padding:8px;border:1px solid #e2deef;border-radius:5px;background:#fff;color:#403a61;font-size:11px;white-space:nowrap;user-select:all}
+.file-reconnect label{display:block;margin:9px 0 5px;color:#403a61;font-size:11px;font-weight:700}
+.file-reconnect-actions{display:flex;gap:8px;align-items:stretch;flex-wrap:wrap}
+.quick-form .file-reconnect-actions input{flex:1 1 180px;min-height:38px}
+.file-reconnect-actions button:disabled{opacity:.6;cursor:wait}
 .quick-form .file-help{margin:9px 0 0;color:#858291}
 .seed-notice{display:flex;gap:14px;margin-top:13px;padding:11px 13px;background:#fbf8f0;border-left:3px solid #c5a66e;color:#6d604c;font-size:11px;line-height:1.55}
 .seed-notice strong{flex:none;color:#62513a}

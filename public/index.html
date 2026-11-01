@@ -66,7 +66,16 @@
               <textarea id="seed-phrases" placeholder="Paste seed phrases here, one per line" rows="2" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
               <div class="generate-actions"><button id="generate-phrase" class="generate-button" type="button">Generate 12-word phrase</button><span>Creates one phrase locally; review before scanning.</span></div>
               <div class="seed-actions"><button type="submit">Add pasted phrases</button></div>
-              <div class="file-import"><strong>Upload a .txt file to EC2</strong><p>Choosing a file starts an upload after confirmation. Files are processed and scanned only on the server, never in this browser.</p><div class="file-import-actions"><label class="file-button" for="seed-file">Choose .txt file</label><input id="seed-file" type="file" accept=".txt,text/plain"><span>Private SSH tunnel required</span></div><p>Keep this laptop on until the upload is confirmed. EC2 continues afterward while the laptop is off. Upload the next file after confirmation; switch jobs in Portfolio view.</p></div>
+              <div class="file-import"><strong>Upload a .txt file to EC2</strong><p>Choosing a file starts an upload after confirmation. Files are processed and scanned only on the server, never in this browser.</p><div class="file-import-actions"><label class="file-button" for="seed-file">Choose .txt file</label><input id="seed-file" type="file" accept=".txt,text/plain"><span>Private SSH tunnel required</span></div><p>Keep this laptop on until the upload is confirmed. EC2 continues afterward while the laptop is off. Upload the next file after confirmation; switch jobs in Portfolio view.</p>
+                <details class="file-reconnect">
+                  <summary>Reconnect an existing file job</summary>
+                  <p>On EC2, run the command below and choose your job. Paste the one-time code here; it expires after 10 minutes. Reconnecting replaces old browser links for that job.</p>
+                  <code>sudo docker exec -it walleto-app node --no-warnings lib/recover-file-job.js</code>
+                  <label for="file-recovery-code">One-time recovery code</label>
+                  <div class="file-reconnect-actions"><input id="file-recovery-code" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="64" placeholder="Paste the code privately"><button id="file-reconnect" type="button">Reconnect</button></div>
+                  <p>Keep the code private. Do not share it or recovery phrases.</p>
+                </details>
+              </div>
             </div>
             <p class="file-help phrase-retention-note">Pasted phrases stay only in this tab’s memory for export until you reload, leave, or remove the wallet. They are not sent to balance providers.</p>
           </form>

@@ -9,7 +9,15 @@ const publicDir = path.join(__dirname, 'public');
 // The persistent directory must be private to the service account.
 const workerLimits = process.env.WALLETO_BACKGROUND_DIR ? require('./lib/worker-config').readWorkerLimits(process.env) : null;
 const jobs = workerLimits ? require('./lib/background-jobs').createBackgroundJobs(process.env.WALLETO_BACKGROUND_DIR, workerLimits) : null;
-if (workerLimits) console.log(`Background scanner limits: ${workerLimits.concurrency} concurrent checks, ${workerLimits.perNetworkConcurrency} per network.`);
+const recovery = jobs ? require('./lib/file-job-recovery').createFileJobRecovery(jobs) : null;
+if (workerLimits) {
+  console.log(`Background scanner limits: ${workerLimits.concurrency} concurrent checks, ${workerLimits.perNetworkConcurrency} per network.`);
+  // Only an operator with access to the container's private Unix socket can
+  // issue a one-time code. HTTP can redeem a code but cannot list jobs or
+  // create codes, and this does not start a second worker process.
+  require('./lib/file-job-recovery').listenRecoveryControl(process.env.WALLETO_BACKGROUND_DIR, recovery)
+    .catch(() => console.error('Private file-job recovery control is unavailable.'));
+}
 // Balance pages must not wait several seconds on optional price feeds. The
 // browser refreshes the page when its coalesced market request completes.
 async function dashboardMarket() {
@@ -29,6 +37,20 @@ function privateBackgroundRequest(req) {
   if (origin && origin !== `http://${host}`) return false;
   return true;
 }
+function readSmallBody(req, limit = 1024) {
+  return new Promise((resolve, reject) => {
+    let size = 0; let complete = false; const chunks = [];
+    req.on('data', chunk => {
+      if (complete) return;
+      size += chunk.length;
+      if (size > limit) { complete = true; resolve(null); return; }
+      chunks.push(chunk);
+    });
+    req.once('end', () => { if (!complete) { complete = true; resolve(Buffer.concat(chunks).toString('utf8')); } });
+    req.once('error', reject);
+    req.once('aborted', () => reject(new Error('Request interrupted')));
+  });
+}
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   if (url.pathname.startsWith('/api/background/')) {
@@ -37,6 +59,16 @@ const server = http.createServer(async (req, res) => {
     const send = (code, body) => { res.statusCode = code; res.end(JSON.stringify(body)); };
     try {
     if (!jobs || !privateBackgroundRequest(req)) return send(403, { error: 'File import requires a private SSH tunnel and EC2 worker configuration.' });
+    if (req.method === 'POST' && url.pathname === '/api/background/reconnect') {
+      if (req.headers.origin !== `http://${req.headers.host}` || req.headers['content-type'] !== 'application/json') return send(403, { error: 'Invalid recovery origin.' });
+      if (Number(req.headers['content-length']) > 1024) { req.resume(); return send(413, { error: 'Recovery request too large.' }); }
+      const raw = await readSmallBody(req);
+      if (raw === null) return send(413, { error: 'Recovery request too large.' });
+      let input;
+      try { input = JSON.parse(raw); } catch (_) { return send(400, { error: 'Invalid recovery request.' }); }
+      const link = recovery.redeem(input?.code);
+      return link ? send(200, link) : send(404, { error: 'Recovery code is invalid, expired or already used.' });
+    }
     const match = url.pathname.match(/^\/api\/background\/jobs\/([a-f0-9]{64})(?:\/(results|dashboard|matches|phrase|retry|refresh-bnb|restore-hidden))?$/);
     if (req.method === 'POST' && url.pathname === '/api/background/jobs') {
       if (req.headers.origin !== `http://${req.headers.host}` || req.headers['content-type'] !== 'application/octet-stream') return send(403, { error: 'Invalid upload origin.' });
