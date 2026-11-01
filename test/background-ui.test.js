@@ -22,7 +22,7 @@ async function until(check, timeout = 5000) {
   const start = Date.now();
   while (!check()) { if (Date.now() - start > timeout) throw new Error('File dashboard UI did not finish'); await wait(); }
 }
-function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets = null, assets, wallets, hiddenAddresses, restoreFails = false, incomplete = 0, getPhrase, dashboardHook, watchFetch, market = { currency: 'INR', usdToInr: 83, prices: {} }, knownValue, jobStatus = 'finished', timers } = {}) {
+function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets = null, assets, wallets, hiddenAddresses, restoreFails = false, incomplete = 0, getPhrase, dashboardHook, watchFetch, recover, market = { currency: 'INR', usdToInr: 83, prices: {} }, knownValue, jobStatus = 'finished', timers } = {}) {
   const dom = new JSDOM(html, { url, runScripts: 'outside-only' });
   const w = dom.window; const $ = id => w.document.getElementById(id);
   if (timers) { const original = w.setTimeout.bind(w); w.setTimeout = (fn, delay, ...args) => { timers.push(delay); return original(fn, delay, ...args); }; }
@@ -51,6 +51,7 @@ function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets 
   w.fetch = async (resource, options = {}) => {
     const target = String(resource); requests.push({ url: target, options });
     if (target.startsWith('/api/scan')) return watchFetch ? watchFetch(target, options) : { ok: true, json: async () => ({ assets: [{ ...native, rawBalance: '0' }] }) };
+    if (target === '/api/background/reconnect') return recover ? recover(options) : { ok: false };
     const requestedId = target.match(/\/jobs\/([a-f0-9]{64})/)?.[1];
     assert.equal(options.headers.Authorization, `Bearer ${requestedId === id2 ? token2 : token}`);
     if (target.includes('/dashboard')) {
@@ -465,5 +466,105 @@ test('a failed file restore remains recoverable and displays the connection erro
     await until(() => /Could not restore hidden wallets/.test($('scan-errors').textContent));
     assert.equal($('wallet-count').textContent, '0');
     assert.equal($('restore-hidden').hidden, false);
+  } finally { dom.window.close(); }
+});
+
+test('a one-time admin code reconnects an existing EC2 file job in the 8081 dashboard', async () => {
+  const code = 'e'.repeat(64);
+  const ctx = setup({ url: 'http://127.0.0.1:8081/', jobStatus: 'scanning', recover: () => ({ ok: true, json: async () => ({ id, token }) }) });
+  const { dom, w, $, requests, confirmations } = ctx;
+  try {
+    assert.equal($('file-recovery-code').type, 'password');
+    $('file-recovery-code').value = code.toUpperCase(); $('file-reconnect').click();
+    await until(() => $('progress-text').textContent.includes('Checking balances on EC2'));
+    assert.equal($('portfolio-source').value, `file:${id}`);
+    assert.deepEqual(JSON.parse(w.localStorage.getItem('walleto.background-jobs')), [{ id, token }]);
+    assert.equal($('file-recovery-code').value, '');
+    assert.match($('progress-detail').textContent, /network checks/);
+    assert.match(confirmations.at(-1), /replaces older browser access links/i);
+    const call = requests.find(item => item.url === '/api/background/reconnect');
+    assert.equal(call.options.method, 'POST'); assert.deepEqual(JSON.parse(call.options.body), { code });
+    assert.equal(call.options.headers['Content-Type'], 'application/json');
+    assert.ok(!w.document.body.textContent.includes(code));
+    assert.ok(!w.localStorage.getItem('walleto.background-jobs').includes(code));
+    assert.ok(requests.every(item => !item.url.includes(code)), 'the code is never put in a URL');
+  } finally { dom.window.close(); }
+});
+
+test('reconnection preserves other browser job links and selects the recovered job', async () => {
+  const ctx = setup({ url: 'http://localhost:8081/', savedJob: true, recover: () => ({ ok: true, json: async () => ({ id: id2, token: token2 }) }) });
+  const { dom, w, $ } = ctx;
+  try {
+    await until(() => $('asset-list').querySelector('.asset-open'));
+    $('file-recovery-code').value = 'e'.repeat(64); $('file-reconnect').click();
+    await until(() => $('portfolio-source').value === `file:${id2}`);
+    assert.deepEqual(JSON.parse(w.localStorage.getItem('walleto.background-jobs')), [{ id, token }, { id: id2, token: token2 }]);
+    assert.equal($('portfolio-source').options.length, 3);
+  } finally { dom.window.close(); }
+});
+
+test('invalid, cancelled and unavailable recovery cannot consume a code or replace stored links', async () => {
+  const ctx = setup({ url: 'http://127.0.0.1:8081/', savedJob: true });
+  const { dom, w, $, requests } = ctx;
+  try {
+    await until(() => $('asset-list').querySelector('.asset-open'));
+    const before = w.localStorage.getItem('walleto.background-jobs');
+    $('file-recovery-code').value = 'bad'; $('file-reconnect').click();
+    assert.match($('import-status').textContent, /one-time code/i);
+    assert.equal(requests.filter(item => item.url.endsWith('/reconnect')).length, 0);
+    w.confirm = () => false; $('file-recovery-code').value = 'e'.repeat(64); $('file-reconnect').click();
+    assert.equal(requests.filter(item => item.url.endsWith('/reconnect')).length, 0);
+    assert.equal(w.localStorage.getItem('walleto.background-jobs'), before);
+    w.confirm = () => true;
+    w.localStorage.setItem('walleto.background-jobs', '{malformed');
+    $('file-reconnect').click();
+    assert.match($('import-status').textContent, /invalid.*no recovery code was used/i);
+    assert.equal(w.localStorage.getItem('walleto.background-jobs'), '{malformed');
+    assert.equal(requests.filter(item => item.url.endsWith('/reconnect')).length, 0);
+    w.localStorage.setItem('walleto.background-jobs', before);
+    $('file-reconnect').click();
+    await until(() => /could not reconnect/i.test($('import-status').textContent));
+    assert.equal($('file-recovery-code').value, '');
+    assert.equal(w.localStorage.getItem('walleto.background-jobs'), before);
+  } finally { dom.window.close(); }
+});
+
+test('a public-site recovery attempt never sends the code', () => {
+  const ctx = setup({ url: 'https://wallet.example/' }); const { dom, $, requests } = ctx;
+  try {
+    $('file-recovery-code').value = 'e'.repeat(64); $('file-reconnect').click();
+    assert.match($('import-status').textContent, /private SSH tunnel/i);
+    assert.equal(requests.filter(item => item.url.endsWith('/reconnect')).length, 0);
+  } finally { dom.window.close(); }
+});
+
+test('reconnection merges a job added by another tab while the recovery request is in flight', async () => {
+  let resolveRecovery;
+  const ctx = setup({ url: 'http://127.0.0.1:8081/', recover: () => new Promise(resolve => { resolveRecovery = resolve; }) });
+  const { dom, w, $ } = ctx;
+  try {
+    $('file-recovery-code').value = 'e'.repeat(64); $('file-reconnect').click();
+    await until(() => typeof resolveRecovery === 'function');
+    w.localStorage.setItem('walleto.background-jobs', JSON.stringify([{ id: id2, token: token2 }]));
+    resolveRecovery({ ok: true, json: async () => ({ id, token }) });
+    await until(() => $('portfolio-source').value === `file:${id}`);
+    assert.deepEqual(JSON.parse(w.localStorage.getItem('walleto.background-jobs')), [{ id: id2, token: token2 }, { id, token }]);
+  } finally { dom.window.close(); }
+});
+
+test('storage failure after token rotation leaves the job visible for the current page and warns', async () => {
+  const ctx = setup({ url: 'http://127.0.0.1:8081/', recover: () => ({ ok: true, json: async () => ({ id, token }) }) });
+  const { dom, w, $ } = ctx;
+  try {
+    const prototype = Object.getPrototypeOf(w.localStorage); const original = prototype.setItem;
+    prototype.setItem = function (key, value) {
+      if (key === 'walleto.background-jobs') throw new Error('storage full');
+      return original.call(this, key, value);
+    };
+    $('file-recovery-code').value = 'e'.repeat(64); $('file-reconnect').click();
+    await until(() => $('progress-text').textContent.includes('Server scan complete'));
+    assert.equal($('portfolio-source').value, `file:${id}`);
+    assert.match($('import-status').textContent, /storage failed.*keep this page open/i);
+    assert.equal(w.localStorage.getItem('walleto.background-jobs'), null);
   } finally { dom.window.close(); }
 });

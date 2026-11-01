@@ -5,11 +5,11 @@
   const $ = id => document.getElementById(id);
   const storageKey = 'walleto.background-jobs';
   const legacyStorageKey = 'walleto.background-job';
-  let jobs = []; let job = null; let timer = null; let requestVersion = 0; let uploading = false;
+  let jobs = []; let job = null; let timer = null; let requestVersion = 0; let uploading = false; let reconnecting = false;
   let storageWarning = false; let refreshingBnb = false; let restoringHidden = false;
   const view = { assetOffset: 0, walletOffset: 0, network: 'all' };
   const state = { data: null, error: '', loading: false, uploadPercent: 0 };
-  const validJob = item => item && /^[a-f0-9]{64}$/.test(item.id || '') && /^[a-f0-9]{64}$/.test(item.token || '');
+  const validJob = item => item && typeof item.id === 'string' && /^[a-f0-9]{64}$/.test(item.id) && typeof item.token === 'string' && /^[a-f0-9]{64}$/.test(item.token);
   try {
     const saved = localStorage.getItem(storageKey);
     if (saved !== null) {
@@ -27,6 +27,28 @@
   function persistJobs() {
     try { localStorage.setItem(storageKey, JSON.stringify(jobs)); localStorage.removeItem(legacyStorageKey); storageWarning = false; }
     catch (_) { storageWarning = true; }
+  }
+  // Reconnection merges with both current and legacy saved links rather than
+  // silently replacing other jobs in this browser. Refuse malformed storage.
+  function readStoredJobs() {
+    const result = []; const raw = localStorage.getItem(storageKey);
+    if (raw !== null) {
+      const value = JSON.parse(raw);
+      if (!Array.isArray(value) || !value.every(validJob)) throw new Error('Invalid saved jobs');
+      result.push(...value.map(item => ({ id: item.id, token: item.token })));
+    }
+    const legacy = localStorage.getItem(legacyStorageKey);
+    if (legacy !== null) {
+      const value = JSON.parse(legacy);
+      if (value !== null && !validJob(value)) throw new Error('Invalid legacy job');
+      if (value) result.push({ id: value.id, token: value.token });
+    }
+    return result;
+  }
+  function mergedJobs(...lists) {
+    const byId = new Map();
+    for (const item of lists.flat()) byId.set(item.id, { id: item.id, token: item.token });
+    return [...byId.values()];
   }
   const privateAccess = () => location.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(location.hostname);
   function notify() { window.dispatchEvent(new Event('file-scan:update')); }
@@ -153,12 +175,48 @@
     if (typeof result.phrase !== 'string' || result.phrase.length > 256 || ![12, 15, 18, 21, 24].includes(result.phrase.trim().split(/\s+/).length)) throw new Error('The server could not verify this recovery phrase.');
     return result.phrase.trim().toLowerCase().replace(/\s+/g, ' ');
   }
+  async function reconnectFileJob() {
+    if (uploading || reconnecting) return importStatus('Wait for the current upload or reconnection to finish.', true);
+    if (!privateAccess()) return importStatus('Reconnect through the private SSH tunnel to EC2.', true);
+    const field = $('file-recovery-code'); const code = field.value.trim().toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(code)) return importStatus('Enter the one-time code generated on EC2.', true);
+    let before;
+    try {
+      localStorage.setItem(`${storageKey}.test`, '1'); localStorage.removeItem(`${storageKey}.test`);
+      before = readStoredJobs();
+    } catch (_) { return importStatus('Browser storage is unavailable or its saved links are invalid. No recovery code was used.', true); }
+    if (!confirm('Reconnect this EC2 file job? This replaces older browser access links for that job. The scan and saved results are not deleted.')) return;
+    field.value = ''; reconnecting = true; $('file-reconnect').disabled = true;
+    try {
+      const response = await fetch('/api/background/reconnect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }), cache: 'no-store' });
+      if (!response.ok) throw new Error('Recovery failed');
+      const result = await response.json();
+      if (!validJob(result)) throw new Error('Invalid recovery response');
+      const recovered = { id: result.id, token: result.token };
+      let stored = before; let canPersist = true;
+      try { stored = readStoredJobs(); } catch (_) { canPersist = false; }
+      jobs = mergedJobs(jobs, before, stored, [recovered]);
+      job = recovered; requestVersion++; clearTimeout(timer);
+      state.data = null; state.error = ''; state.loading = false; state.uploadPercent = 0;
+      Object.assign(view, { assetOffset: 0, walletOffset: 0, network: 'all' });
+      if (canPersist) persistJobs(); else storageWarning = true;
+      const warning = storageWarning ? ' Browser storage failed; keep this page open or generate another recovery code.' : '';
+      importStatus(`Existing EC2 job reconnected.${warning}`, storageWarning);
+      window.dispatchEvent(new Event('file-scan:started')); notify(); await refresh();
+    } catch (_) {
+      importStatus('Could not reconnect. Check the private tunnel and generate a new code if the previous one expired or was used.', true);
+    } finally { reconnecting = false; $('file-reconnect').disabled = false; }
+  }
+  $('file-reconnect').addEventListener('click', reconnectFileJob);
+  $('file-recovery-code').addEventListener('keydown', event => {
+    if (event.key === 'Enter') { event.preventDefault(); reconnectFileJob(); }
+  });
   $('seed-file').addEventListener('change', () => {
     const field = $('seed-file'); const file = field.files[0];
     // Do not display a file name: it might itself contain sensitive information.
     field.value = '';
     if (!file) return;
-    if (uploading) return importStatus('A file upload is already in progress.', true);
+    if (uploading || reconnecting) return importStatus('A file upload or reconnection is already in progress.', true);
     if (!/\.txt$/i.test(file.name)) return importStatus('Choose a UTF-8 .txt file.', true);
     if (!privateAccess()) return importStatus('File import requires the private SSH tunnel to EC2. The file was not processed or uploaded in this browser.', true);
     try { localStorage.setItem(`${storageKey}.test`, '1'); localStorage.removeItem(`${storageKey}.test`); }
@@ -200,7 +258,7 @@
     try { xhr.send(file); } catch (_) { failed(); }
   });
   window.addEventListener('beforeunload', event => { if (uploading) { event.preventDefault(); event.returnValue = ''; } });
-  window.addEventListener('pagehide', () => { requestVersion++; clearTimeout(timer); });
+  window.addEventListener('pagehide', () => { $('file-recovery-code').value = ''; requestVersion++; clearTimeout(timer); });
   window.addEventListener('pageshow', event => { if (event.persisted && job) refresh(); });
   window.fileScan = { snapshot, setView, select, refresh, restoreHidden, refreshBnb, retry, remove, phrase };
   if (job) refresh();
