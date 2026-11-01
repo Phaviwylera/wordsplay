@@ -404,3 +404,24 @@ test('closing or removing a keystore while unlocking cannot retain a late phrase
   assert.match($('asset-export-unlock-status').textContent, /Could not unlock/);
   dom.window.close();
 });
+
+test('hiding and restoring a seed wallet does not discard its tab-only phrase', async () => {
+  let funded = false;
+  const ctx = setup({ response: params => ({ assets: [funded && params.get('network') === 'ethereum' ? positive : zero] }) });
+  const { dom, w, $ } = ctx;
+  try {
+    await seedImport(ctx, phrase1);
+    assert.equal($('wallet-count').textContent, '0');
+    assert.match($('restore-hidden').textContent, /\(1\)/);
+    assert.equal(w.localStorage.getItem('walleto.wallets').includes(phrase1), false);
+    $('restore-hidden').click();
+    assert.equal($('wallet-count').textContent, '1');
+    funded = true; $('refresh').click();
+    await until(() => !$('refresh').disabled && Boolean(assetButton(w, address1)));
+    assetButton(w, address1).click();
+    assert.equal($('asset-export-phrase-block').hidden, false);
+    $('asset-export-reveal').click();
+    assert.equal($('asset-export-phrase').textContent, phrase1);
+    assert.equal(w.localStorage.getItem('walleto.wallets').includes(phrase1), false);
+  } finally { dom.window.close(); }
+});

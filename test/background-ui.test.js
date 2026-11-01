@@ -22,7 +22,7 @@ async function until(check, timeout = 5000) {
   const start = Date.now();
   while (!check()) { if (Date.now() - start > timeout) throw new Error('File dashboard UI did not finish'); await wait(); }
 }
-function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets = null, assets, wallets, incomplete = 0, getPhrase, dashboardHook, watchFetch, market = { currency: 'INR', usdToInr: 83, prices: {} }, knownValue, jobStatus = 'finished', timers } = {}) {
+function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets = null, assets, wallets, hiddenAddresses, restoreFails = false, incomplete = 0, getPhrase, dashboardHook, watchFetch, market = { currency: 'INR', usdToInr: 83, prices: {} }, knownValue, jobStatus = 'finished', timers } = {}) {
   const dom = new JSDOM(html, { url, runScripts: 'outside-only' });
   const w = dom.window; const $ = id => w.document.getElementById(id);
   if (timers) { const original = w.setTimeout.bind(w); w.setTimeout = (fn, delay, ...args) => { timers.push(delay); return original(fn, delay, ...args); }; }
@@ -31,6 +31,7 @@ function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets 
   let currentIncomplete = incomplete;
   const allAssets = assets || [{ address, network: 'ethereum', status: 'done', asset: native }];
   const allWallets = wallets || [{ address, total: 5, completed: 5, incomplete, hasAssets: true }];
+  const hidden = hiddenAddresses ? new Set(hiddenAddresses) : null;
   if (savedJob) w.localStorage.setItem('walleto.background-job', JSON.stringify({ id, token }));
   if (savedWallets) w.localStorage.setItem('walleto.wallets', JSON.stringify(savedWallets));
   w.AbortSignal = global.AbortSignal; w.TextDecoder = global.TextDecoder;
@@ -57,16 +58,22 @@ function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets 
       if (dashboardHook) await dashboardHook(params);
       const filter = params.get('network'); const assetOffset = Number(params.get('assetOffset')); const walletOffset = Number(params.get('walletOffset'));
       const filtered = filter === 'all' ? allAssets : allAssets.filter(row => row.network === filter);
+      const visibleWallets = hidden ? allWallets.filter(row => !hidden.has(row.address)) : allWallets;
+      const hiddenCount = hidden?.size || 0;
       return { ok: true, json: async () => ({
-        id: requestedId, status: jobStatus, wallets: allWallets.length, total: allWallets.length * 5, completed: allWallets.length * 5,
+        id: requestedId, status: jobStatus, wallets: allWallets.length, ...(hidden ? { hiddenWallets: hiddenCount, visibleWallets: visibleWallets.length } : {}), total: allWallets.length * 5, completed: allWallets.length * 5,
         invalid: 0, incomplete: currentIncomplete, phraseMatching: true, retainsPhrases: true, market,
         knownValue: knownValue ?? allAssets.length * 2, unpriced: 0, assetCount: allAssets.length, filteredAssetCount: filtered.length,
-        assetOffset, walletOffset, network: filter, assets: filtered.slice(assetOffset, assetOffset + 100).map(row => ({ phraseAvailable: true, ...row })), walletPage: allWallets.slice(walletOffset, walletOffset + 100),
+        assetOffset, walletOffset, network: filter, assets: filtered.slice(assetOffset, assetOffset + 100).map(row => ({ phraseAvailable: true, ...row })), walletPage: visibleWallets.slice(walletOffset, walletOffset + 100),
       }) };
     }
     if (target.includes('/phrase')) {
       const requested = new URL(target, url).searchParams.get('address');
       return { ok: true, json: async () => ({ phrase: getPhrase ? await getPhrase(requested) : requested === address2 ? phrase2 : phrase }) };
+    }
+    if (target.endsWith('/restore-hidden') && hidden) {
+      if (restoreFails) return { ok: false };
+      const restored = hidden.size; hidden.clear(); return { ok: true, json: async () => ({ restored }) };
     }
     if (target.endsWith('/retry') || target.endsWith('/refresh-bnb')) { currentIncomplete = 0; return { ok: true, json: async () => ({ ok: true }) }; }
     if (options.method === 'DELETE') return { ok: true, json: async () => ({ ok: true }) };
@@ -424,4 +431,39 @@ test('small file scans poll promptly while larger scans use the gentler interval
   await until(() => large.$('asset-list').querySelector('tr'));
   assert.ok(largeTimers.includes(4000), 'larger jobs poll after four seconds');
   large.dom.window.close();
+});
+
+test('file pagination uses visible counts and restoring resets the wallet page', async () => {
+  const wallets = Array.from({ length: 205 }, (_, i) => ({ address: `0x${(i + 1).toString(16).padStart(40, '0')}`, total: 5, completed: 5, incomplete: 0, hasAssets: false }));
+  const ctx = setup({ savedJob: true, wallets, hiddenAddresses: wallets.slice(0, 104).map(item => item.address), assets: [] });
+  const { dom, $, requests } = ctx;
+  try {
+    await until(() => $('wallet-count').textContent === '101');
+    assert.match($('restore-hidden').textContent, /\(104\)/);
+    assert.match($('wallet-page-label').textContent, /1–100 of 101/);
+    assert.match($('progress-detail').textContent, /205 wallets/);
+    $('wallet-next').click();
+    await until(() => /101–101 of 101/.test($('wallet-page-label').textContent));
+    $('restore-hidden').click();
+    await until(() => $('wallet-count').textContent === '205');
+    assert.match($('wallet-page-label').textContent, /1–100 of 205/);
+    assert.equal($('restore-hidden').hidden, true);
+    const request = requests.find(item => item.url.endsWith('/restore-hidden'));
+    assert.equal(request.options.method, 'POST');
+    assert.equal(request.options.headers.Authorization, `Bearer ${token}`);
+    assert.ok(requests.every(item => !item.url.startsWith('/api/scan')));
+  } finally { dom.window.close(); }
+});
+
+test('a failed file restore remains recoverable and displays the connection error', async () => {
+  const row = { address, total: 5, completed: 5, incomplete: 0, hasAssets: false };
+  const ctx = setup({ savedJob: true, wallets: [row], hiddenAddresses: [address], restoreFails: true, assets: [] });
+  const { dom, $ } = ctx;
+  try {
+    await until(() => !$('restore-hidden').hidden);
+    $('restore-hidden').click();
+    await until(() => /Could not restore hidden wallets/.test($('scan-errors').textContent));
+    assert.equal($('wallet-count').textContent, '0');
+    assert.equal($('restore-hidden').hidden, false);
+  } finally { dom.window.close(); }
 });

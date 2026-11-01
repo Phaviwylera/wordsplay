@@ -161,10 +161,10 @@ td:last-child,th:last-child{text-align:right}
 .wallet-scan-state.incomplete{color:#9d6a32!important}
 .remove-wallet{border:0;background:none;color:#9994a6;font-size:20px;padding:4px}
 .remove-wallet:hover{color:var(--danger)}
-.outline-button,.remove-zero-button{width:100%;min-height:36px;border:1px solid #dddbe7;border-radius:6px;background:#fff;color:var(--accent);font-size:11px;font-weight:700}
+.outline-button,.restore-hidden-button{width:100%;min-height:36px;border:1px solid #dddbe7;border-radius:6px;background:#fff;color:var(--accent);font-size:11px;font-weight:700}
 .outline-button:hover{background:#f8f7fb}
-.remove-zero-button{margin-top:8px;border-color:#e7ccd0;color:var(--danger)}
-.remove-zero-button:hover:not(:disabled){background:#fbf1f2}
+.restore-hidden-button{margin-top:8px}
+.restore-hidden-button:hover:not(:disabled){background:#f8f7fb}
 .zero-help{margin-top:7px;font-size:10px;line-height:1.5;color:#858291}
 .pager{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 20px;color:#858291;font-size:11px}
 .pager button{border:1px solid #dedde6;background:#fff;border-radius:5px;color:var(--accent);font-size:11px;font-weight:700;padding:7px 9px}

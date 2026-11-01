@@ -35,7 +35,7 @@ const server = http.createServer(async (req, res) => {
     const send = (code, body) => { res.statusCode = code; res.end(JSON.stringify(body)); };
     try {
     if (!jobs || !privateBackgroundRequest(req)) return send(403, { error: 'File import requires a private SSH tunnel and EC2 worker configuration.' });
-    const match = url.pathname.match(/^\/api\/background\/jobs\/([a-f0-9]{64})(?:\/(results|dashboard|matches|phrase|retry|refresh-bnb))?$/);
+    const match = url.pathname.match(/^\/api\/background\/jobs\/([a-f0-9]{64})(?:\/(results|dashboard|matches|phrase|retry|refresh-bnb|restore-hidden))?$/);
     if (req.method === 'POST' && url.pathname === '/api/background/jobs') {
       if (req.headers.origin !== `http://${req.headers.host}` || req.headers['content-type'] !== 'application/octet-stream') return send(403, { error: 'Invalid upload origin.' });
       try { const result = await jobs.receive(req, { retainPhrases: true }); return send(202, result); }
@@ -64,6 +64,9 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && action === 'refresh-bnb' && req.headers.origin === `http://${req.headers.host}`) {
       return jobs.refreshBnb(id, token) ? send(202, { ok: true }) : send(409, { error: 'BNB checks cannot be refreshed yet.' });
+    }
+    if (req.method === 'POST' && action === 'restore-hidden' && req.headers.origin === `http://${req.headers.host}`) {
+      return send(200, { restored: jobs.restoreHidden(id, token) });
     }
     if (req.method === 'DELETE' && !action && req.headers.origin === `http://${req.headers.host}`) {
       return jobs.remove(id, token) ? send(200, { ok: true }) : send(409, { error: 'Only finished jobs can be removed.' });
@@ -102,6 +105,6 @@ const server = http.createServer(async (req, res) => {
   }
   res.writeHead(200, headers);
   fs.createReadStream(path.join(publicDir, file[0])).pipe(res);
-}).listen(process.env.PORT || 3000, '0.0.0.0', () => console.log(`Wallet viewer running on port ${process.env.PORT || 3000}`));
+}).listen(process.env.PORT || 3000, '0.0.0.0', () => console.log(`Wallet viewer running on port ${server.address().port}`));
 // Large private uploads can take longer than Node's default request timeout.
 if (jobs) server.requestTimeout = 0;

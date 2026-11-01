@@ -15,21 +15,23 @@ function request(port, method, resource, headers = {}, body = '') {
     req.on('error', reject); req.end(body);
   });
 }
-
-test('background endpoints require SSH-style loopback host, same origin and a job token', { timeout: 10000 }, async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-http-'));
-  const probe = http.createServer();
-  await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
-  const port = probe.address().port;
-  await new Promise(resolve => probe.close(resolve));
-  const source = "require('./lib/market').getMarket=async()=>({currency:'INR',usdToInr:83,prices:{}});require('./server');";
-  const child = spawn(process.execPath, ['-e', source], { env: { ...process.env, PORT: String(port), WALLETO_BACKGROUND_DIR: dir }, stdio: ['ignore', 'pipe', 'pipe'] });
-  await new Promise((resolve, reject) => {
-    let output = ''; const timeout = setTimeout(() => reject(new Error('server startup timeout')), 5000);
-    child.stdout.on('data', chunk => { output += chunk; if (output.includes('Wallet viewer running')) { clearTimeout(timeout); resolve(); } });
-    child.on('exit', code => reject(new Error(`server exited: ${code}`)));
+function childPort(child) {
+  return new Promise((resolve, reject) => {
+    let output = ''; const timeout = setTimeout(() => reject(new Error('server startup timeout')), 10000);
+    child.stdout.on('data', chunk => { output += chunk; const match = output.match(/Wallet viewer running on port (\d+)/); if (match) { clearTimeout(timeout); resolve(Number(match[1])); } });
+    child.on('exit', code => { clearTimeout(timeout); reject(new Error(`server exited: ${code}`)); });
   });
+}
+async function stopChild(child) {
+  if (child.exitCode === null && child.signalCode === null) { child.kill('SIGTERM'); await new Promise(resolve => child.once('exit', resolve)); }
+}
+
+test('background endpoints require SSH-style loopback host, same origin and a job token', { timeout: 20000 }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-http-'));
+  const source = "require('./lib/market').getMarket=async()=>({currency:'INR',usdToInr:83,prices:{}});require('./server');";
+  const child = spawn(process.execPath, ['-e', source], { env: { ...process.env, PORT: '0', WALLETO_BACKGROUND_DIR: dir }, stdio: ['ignore', 'pipe', 'pipe'] });
   try {
+    const port = await childPort(child);
     const host = `127.0.0.1:${port}`;
     const headers = { host, origin: `http://${host}`, 'content-type': 'application/octet-stream' };
     assert.equal((await request(port, 'POST', '/api/background/jobs', { ...headers, host: 'example.com' })).status, 403);
@@ -53,6 +55,14 @@ test('background endpoints require SSH-style loopback host, same origin and a jo
     assert.equal((await request(port, 'POST', refresh, { host, authorization: `Bearer ${token}` })).status, 405);
     assert.equal((await request(port, 'POST', refresh, { ...headers, authorization: `Bearer ${'0'.repeat(64)}` })).status, 404);
     assert.equal((await request(port, 'POST', refresh, { ...headers, authorization: `Bearer ${token}` })).status, 409); // Empty job has no BNB checks.
+    const restore = `/api/background/jobs/${id}/restore-hidden`;
+    assert.equal((await request(port, 'POST', restore, { ...headers, host: 'example.com', authorization: `Bearer ${token}` })).status, 403);
+    assert.equal((await request(port, 'POST', restore, { ...headers, origin: 'http://evil.example', authorization: `Bearer ${token}` })).status, 403);
+    assert.equal((await request(port, 'POST', restore, { host, authorization: `Bearer ${token}` })).status, 405);
+    assert.equal((await request(port, 'POST', restore, { ...headers, authorization: `Bearer ${'0'.repeat(64)}` })).status, 404);
+    assert.equal((await request(port, 'GET', restore, { host, authorization: `Bearer ${token}` })).status, 405);
+    const restored = await request(port, 'POST', restore, { ...headers, authorization: `Bearer ${token}` });
+    assert.equal(restored.status, 200); assert.equal(restored.body.restored, 0);
     const matches = await request(port, 'GET', `/api/background/jobs/${id}/matches`, { host, authorization: `Bearer ${token}` });
     assert.equal(matches.status, 200);
     assert.deepEqual(matches.body.matches, []);
@@ -61,26 +71,20 @@ test('background endpoints require SSH-style loopback host, same origin and a jo
     const phrase = await request(port, 'GET', `/api/background/jobs/${id}/phrase?address=0x123`, { host, authorization: `Bearer ${token}` });
     assert.equal(phrase.status, 404);
   } finally {
-    child.kill('SIGTERM'); await new Promise(resolve => child.once('exit', resolve));
+    await stopChild(child);
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('slow market providers do not block the EC2 balance page; later refresh includes the INR quote', { timeout: 10000 }, async () => {
+test('slow market providers do not block the EC2 balance page; later refresh includes the INR quote', { timeout: 20000 }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-http-prices-'));
-  const probe = http.createServer(); await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
-  const port = probe.address().port; await new Promise(resolve => probe.close(resolve));
   const source = `let quote=null;let waiters=[];process.on('message',()=>{quote={currency:'INR',usdToInr:83,prices:{}};for(const resolve of waiters)resolve(quote);waiters=[];process.send('ready')});
     require('./lib/market').getMarket=()=>quote?Promise.resolve(quote):new Promise(resolve=>waiters.push(resolve));
     require('./lib/scanner').scanWallet=async (_address,network)=>({assets:[{name:'Native',symbol:'ETH',type:'native',rawBalance:'1000000000000000000',decimals:18,price:'2'},...(network==='bnb'?[{name:'BUSD',symbol:'BUSD',type:'BEP-20',contract:'0xe9e7cea3dedca5984780bafc599bd69add087d56',rawBalance:'0',decimals:18,price:null}]:[])],...(network==='bnb'?{coverage:'bnb-and-busd'}:{})});
     require('./server');`;
-  const child = spawn(process.execPath, ['-e', source], { env: { ...process.env, PORT: String(port), WALLETO_BACKGROUND_DIR: dir }, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+  const child = spawn(process.execPath, ['-e', source], { env: { ...process.env, PORT: '0', WALLETO_BACKGROUND_DIR: dir }, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
   try {
-    await new Promise((resolve, reject) => {
-      let output = ''; const timeout = setTimeout(() => reject(new Error('server startup timeout')), 5000);
-      child.stdout.on('data', chunk => { output += chunk; if (output.includes('Wallet viewer running')) { clearTimeout(timeout); resolve(); } });
-      child.on('exit', code => reject(new Error(`server exited: ${code}`)));
-    });
+    const port = await childPort(child);
     const host = `127.0.0.1:${port}`;
     const upload = await request(port, 'POST', '/api/background/jobs', { host, origin: `http://${host}`, 'content-type': 'application/octet-stream' }, 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about');
     const { id, token } = upload.body; const headers = { host, authorization: `Bearer ${token}` };
@@ -101,7 +105,7 @@ test('slow market providers do not block the EC2 balance page; later refresh inc
     const refreshed = await request(port, 'GET', `/api/background/jobs/${id}/dashboard`, headers);
     assert.equal(refreshed.body.market.usdToInr, 83); assert.equal(refreshed.body.knownValue, 10);
   } finally {
-    child.kill('SIGTERM'); await new Promise(resolve => child.once('exit', resolve));
+    await stopChild(child);
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

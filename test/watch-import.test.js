@@ -48,6 +48,9 @@ test('generates a valid phrase locally and scans it only after submission', asyn
   assert.equal(requests.length, 5);
   assert.ok(requests.every(url => !url.includes('abandon')));
   assert.equal(w.localStorage.getItem('walleto.wallets').includes(phrase), false);
+  assert.equal($('wallet-count').textContent, '0');
+  assert.match($('restore-hidden').textContent, /\(1\)/);
+  $('restore-hidden').click();
   assert.match($('wallet-list').textContent, /Scanned/);
   dom.window.close();
 });
@@ -80,6 +83,8 @@ test('pasted phrases derive multiple addresses, reject invalid lines and dedupli
   assert.equal(w.localStorage.getItem('walleto.wallets').includes(phrase1), false);
   assert.equal(requests.length, 10);
   assert.ok(requests.every(url => !url.includes('test') && !url.includes('abandon')));
+  assert.match($('restore-hidden').textContent, /\(2\)/);
+  $('restore-hidden').click();
   assert.equal($('wallet-list').querySelector('strong').textContent, address1);
   dom.window.close();
 });
@@ -104,6 +109,7 @@ test('address input validates, avoids duplicates and uses the address as the lab
   await wait();
   assert.match($('import-status').textContent, /already being tracked/);
   assert.equal(JSON.parse(w.localStorage.getItem('walleto.wallets')).length, 1);
+  $('restore-hidden').click();
   assert.equal($('wallet-list').querySelector('strong').textContent, address1);
   assert.equal(requests.length, 5);
   dom.window.close();
@@ -240,7 +246,8 @@ test('warns when browser storage is full instead of claiming the import was save
   for (let i = 0; i < 100 && !$('import-status').textContent.includes('storage'); i++) await wait();
   assert.match($('import-status').textContent, /storage is full or unavailable/);
   assert.match($('import-status').textContent, /only last this session/);
-  assert.equal($('wallet-count').textContent, '1');
+  assert.equal($('wallet-count').textContent, '0');
+  assert.match($('restore-hidden').textContent, /\(1\)/);
   dom.window.close();
 });
 
@@ -258,19 +265,22 @@ test('shows network progress and ticks only successfully scanned wallets', async
   await new Promise(resolve => setTimeout(resolve, 220));
   assert.equal($('progress-percent').textContent, '50%');
   assert.equal($('progress-bar').value, 50);
-  assert.match($('wallet-list').children[0].textContent, /✓ Scanned/);
-  assert.doesNotMatch($('wallet-list').children[1].textContent, /✓ Scanned/);
-  assert.equal($('remove-zero').disabled, true);
+  assert.equal($('wallet-list').children.length, 1);
+  assert.match($('wallet-list').textContent, new RegExp(address2));
+  assert.doesNotMatch($('wallet-list').textContent, /✓ Scanned/);
+  assert.match($('restore-hidden').textContent, /\(1\)/);
   for (const req of pending.filter(item => item.url.includes(address2))) req.resolve({ ok: true, json: async () => completeResult(networkOf(req.url), [zeroNative]) });
   for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
   assert.equal($('progress-percent').textContent, '100%');
-  assert.match($('remove-zero').textContent, /\(0\)/);
-  assert.equal($('remove-zero').disabled, true);
-  assert.equal($('remove-zero').hidden, false);
+  assert.equal($('wallet-count').textContent, '0');
+  assert.match($('restore-hidden').textContent, /\(2\)/);
+  $('restore-hidden').click();
+  assert.equal($('wallet-list').children.length, 2);
+  assert.match($('wallet-list').children[0].textContent, /✓ Scanned/);
   dom.window.close();
 });
 
-test('bulk removal excludes incomplete native-only coverage and failed or positive balances', async () => {
+test('only fully checked zero wallets hide; positive, failed and malformed checks remain visible', async () => {
   const dom = new JSDOM(fs.readFileSync('public/index.html', 'utf8'), { url: 'https://wallet.example/', runScripts: 'outside-only' });
   const w = dom.window;
   const wallets = Array.from({ length: 6 }, (_, i) => ({ address: `0x${(i + 1).toString(16).padStart(40, '0')}` }));
@@ -287,7 +297,7 @@ test('bulk removal excludes incomplete native-only coverage and failed or positi
     if (index === 1) assets.push({ name: 'Tiny', symbol: 'T', type: 'ERC-20', rawBalance: '1', decimals: 100, price: null });
     if (index === 2) assets.push({ name: 'Collectible', symbol: 'NFT', type: 'ERC-721', rawBalance: '1', decimals: 0, price: null });
     if (index === 5) assets.push({ name: 'Unpriced', symbol: 'U', type: 'ERC-20', rawBalance: '10', decimals: 0, price: null });
-    return { ok: true, json: async () => ({ assets }) };
+    return { ok: true, json: async () => completeResult(query.get('network'), assets) };
   };
   w.scanDirect = async () => { throw new Error('Indexer unavailable'); };
   w.eval(bundle); setPricing(w); w.eval(fs.readFileSync('public/app.js', 'utf8'));
@@ -295,19 +305,24 @@ test('bulk removal excludes incomplete native-only coverage and failed or positi
   for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
   assert.equal($('progress-percent').textContent, '100%');
   assert.match($('progress-text').textContent, /errors/);
+  assert.equal($('wallet-count').textContent, '5');
+  assert.doesNotMatch($('wallet-list').textContent, new RegExp(wallets[0].address));
+  assert.match($('wallet-list').textContent, new RegExp(wallets[1].address)); // tiny positive
+  assert.match($('wallet-list').textContent, new RegExp(wallets[2].address)); // NFT
+  assert.match($('wallet-list').children[2].textContent, /Incomplete/);
   assert.match($('wallet-list').children[3].textContent, /Incomplete/);
-  assert.match($('wallet-list').children[4].textContent, /Incomplete/);
-  assert.match($('remove-zero').textContent, /\(0\)/);
-  assert.match($('zero-help').textContent, /limited token coverage/);
+  assert.match($('restore-hidden').textContent, /\(1\)/);
+  assert.match($('zero-help').textContent, /limited token coverage/i);
   const scannedRequests = requests.length;
-  $('remove-zero').click();
+  $('restore-hidden').click();
   assert.deepEqual(JSON.parse(w.localStorage.getItem('walleto.wallets')).map(item => item.address), wallets.map(item => item.address));
-  assert.equal(requests.length, scannedRequests, 'does not rescan remaining wallets');
-  assert.equal($('remove-zero').disabled, true);
+  assert.equal($('wallet-count').textContent, '6');
+  assert.equal(requests.length, scannedRequests, 'restoring does not rescan remaining wallets');
+  assert.equal($('restore-hidden').hidden, true);
   dom.window.close();
 });
 
-test('bulk removal remains unavailable with native-only coverage', async () => {
+test('restoring a zero-result wallet keeps its entry and does not require confirmation', async () => {
   const dom = new JSDOM(fs.readFileSync('public/index.html', 'utf8'), { url: 'https://wallet.example/', runScripts: 'outside-only' });
   const w = dom.window;
   w.localStorage.setItem('walleto.wallets', JSON.stringify([{ address: address1 }]));
@@ -316,13 +331,16 @@ test('bulk removal remains unavailable with native-only coverage', async () => {
   w.eval(bundle); setPricing(w); w.eval(fs.readFileSync('public/app.js', 'utf8'));
   const $ = id => w.document.getElementById(id);
   for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
-  $('remove-zero').click();
+  assert.equal($('wallet-count').textContent, '0');
+  assert.match($('restore-hidden').textContent, /\(1\)/);
+  $('restore-hidden').click();
   assert.equal(JSON.parse(w.localStorage.getItem('walleto.wallets')).length, 1);
-  assert.match($('remove-zero').textContent, /\(0\)/);
+  assert.equal($('wallet-count').textContent, '1');
+  assert.equal($('restore-hidden').hidden, true);
   dom.window.close();
 });
 
-test('deduplicates saved addresses before scanning or bulk removal', async () => {
+test('deduplicates saved addresses before scanning, hiding and restoring', async () => {
   const dom = new JSDOM(fs.readFileSync('public/index.html', 'utf8'), { url: 'https://wallet.example/', runScripts: 'outside-only' });
   const w = dom.window;
   w.localStorage.setItem('walleto.wallets', JSON.stringify([{ address: address1 }, { address: address1.toLowerCase() }]));
@@ -333,11 +351,12 @@ test('deduplicates saved addresses before scanning or bulk removal', async () =>
   const $ = id => w.document.getElementById(id);
   for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
   assert.equal(calls, 5);
+  assert.equal($('wallet-count').textContent, '0');
+  assert.match($('restore-hidden').textContent, /\(1\)/);
+  $('restore-hidden').click();
   assert.equal($('wallet-count').textContent, '1');
-  assert.match($('remove-zero').textContent, /\(0\)/);
-  assert.equal($('remove-zero').disabled, true);
-  $('remove-zero').click();
-  assert.equal(JSON.parse(w.localStorage.getItem('walleto.wallets')).length, 2, 'disabled removal does not rewrite storage');
+  assert.equal(JSON.parse(w.localStorage.getItem('walleto.wallets')).length, 1, 'deduplicated wallet is retained');
+  assert.equal(calls, 5);
   dom.window.close();
 });
 
@@ -467,7 +486,7 @@ test('retry failed checks preserves successful balances and retries only failure
   assert.match($('scan-errors').textContent, /Base: 1.*unavailable.*not treated as zero/i);
   assert.equal($('retry-failed').hidden, false);
   assert.equal($('total-value').textContent, '₹664.00');
-  assert.match($('remove-zero').textContent, /\(0\)/);
+  assert.equal($('restore-hidden').hidden, true);
   fail = false;
   $('retry-failed').click();
   for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
@@ -477,7 +496,8 @@ test('retry failed checks preserves successful balances and retries only failure
   assert.equal($('progress-percent').textContent, '100%');
   assert.equal($('retry-failed').hidden, true);
   assert.match($('wallet-list').children[0].textContent, /✓ Scanned/);
-  assert.match($('remove-zero').textContent, /\(0\)/);
+  assert.match($('restore-hidden').textContent, /\(1\)/);
+  assert.doesNotMatch($('wallet-list').textContent, new RegExp(address1));
   dom.window.close();
 });
 
@@ -501,7 +521,7 @@ test('automatically retries transient rate limits and reports remaining rate-lim
   assert.match($('progress-detail').textContent, /1 failed/);
   assert.match($('scan-errors').textContent, /Base: 1.*rate limiting/i);
   assert.match($('wallet-list').textContent, /Incomplete/);
-  assert.equal($('remove-zero').disabled, true);
+  assert.equal($('restore-hidden').hidden, true);
   dom.window.close();
 });
 
@@ -539,7 +559,7 @@ test('imports Bitcoin and TRON addresses and scans only the correct networks', a
   assert.match($('asset-list').textContent, /BTC/);
   assert.match($('asset-list').textContent, /0\.00000001/);
   assert.equal($('total-value').textContent, '—');
-  assert.equal($('remove-zero').disabled, true);
+  assert.equal($('restore-hidden').hidden, true);
   $('wallet-address').value = btc; submit(w, $('address-form'));
   assert.match($('import-status').textContent, /already being tracked/);
   $('wallet-address').value = tron; submit(w, $('address-form'));
@@ -566,8 +586,8 @@ test('EVM wallet scans BNB Smart Chain and reports incomplete native-only covera
   assert.ok(requests.some(url => url.includes('network=bnb')));
   assert.match($('asset-list').textContent, /BNB/);
   assert.equal($('total-value').textContent, '—');
-  assert.equal($('remove-zero').disabled, true);
-  assert.match($('zero-help').textContent, /limited token coverage/);
+  assert.equal($('restore-hidden').hidden, true);
+  assert.match($('zero-help').textContent, /limited token coverage/i);
   dom.window.close();
 });
 
@@ -598,7 +618,7 @@ test('a failed Bitcoin check can be retried without losing successful mixed-netw
   assert.equal(requests[7], 'bitcoin');
   assert.match($('asset-list').textContent, /BTC/);
   assert.match($('asset-list').textContent, /TRX/);
-  assert.equal($('remove-zero').disabled, true);
+  assert.equal($('restore-hidden').hidden, true);
   dom.window.close();
 });
 
@@ -765,7 +785,7 @@ test('a priced token-only result is in the main INR total even when every chain 
   assert.match($('value-note').textContent, /Partial results/);
   assert.match($('scan-errors').textContent, /Base: 1.*Native balance unavailable/);
   assert.match($('wallet-list').textContent, /Incomplete/);
-  assert.equal($('remove-zero').disabled, true);
+  assert.equal($('restore-hidden').hidden, true);
   assert.equal($('retry-failed').hidden, false);
   dom.window.close();
 });
