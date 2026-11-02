@@ -120,7 +120,7 @@ test('imports more than 50 pasted phrases and bounds foreground scan concurrency
   for (let i = 0; i < 200 && $('refresh').disabled; i++) await wait();
   assert.equal($('refresh').disabled, false, 'all network scans finished');
   assert.equal(requests.length, 55 * 5);
-  assert.ok(maxActive <= 15, `at most fifteen simultaneous scans, observed ${maxActive}`);
+  assert.ok(maxActive <= 20, `at most twenty simultaneous scans, observed ${maxActive}`);
   assert.ok(requests.every(url => !phrases.some(phrase => url.includes(phrase))));
   dom.window.close();
 });
@@ -371,7 +371,7 @@ test('remove all clears every page and cancels an ongoing scan without accepting
   w.confirm = message => { confirmation = message; return true; };
   w.eval(bundle); setPricing(w); w.eval(fs.readFileSync('public/app.js', 'utf8'));
   const $ = id => w.document.getElementById(id);
-  assert.equal(requests.length, 15);
+  assert.equal(requests.length, 20);
   assert.equal($('remove-all').hidden, false);
   assert.equal($('remove-all').disabled, false);
   assert.match($('remove-all').textContent, /105/);
@@ -390,7 +390,7 @@ test('remove all clears every page and cancels an ongoing scan without accepting
   const asset = { ...zeroNative, rawBalance: '1000000000000000000', price: '100' };
   for (const request of requests) request.resolve({ ok: true, json: async () => ({ assets: [asset] }) });
   await wait();
-  assert.equal(requests.length, 15, 'queued requests never start');
+  assert.equal(requests.length, 20, 'queued requests never start');
   assert.equal($('wallet-count').textContent, '0');
   assert.equal($('asset-count').textContent, '0');
   assert.equal($('total-value').textContent, '₹0.00');
@@ -633,10 +633,10 @@ test('scan errors show the specific reason for each network', async () => {
   dom.window.close();
 });
 
-test('BNB and canonical BUSD values and the whole watch total update in INR without another balance scan', async () => {
-  const { BUSD_BSC } = require('../lib/prices');
+test('BNB and canonical BUSD/USDT values update in the whole watch total without another scan', async () => {
+  const { BUSD_BSC, USDT_BSC } = require('../lib/prices');
   const { dom, w, $, requests } = setup();
-  let quote = { currency: 'INR', usdToInr: 83, rateAt: '2026-10-31T00:00:00.000Z', prices: { bnb: 600, busd: 0.97 } };
+  let quote = { currency: 'INR', usdToInr: 83, rateAt: '2026-10-31T00:00:00.000Z', prices: { bnb: 600, busd: 0.97, usdt: 1.01 } };
   w.pricing = { snapshot: () => ({ data: quote, loading: false }), refresh: () => {} };
   w.fetch = async url => {
     requests.push(url);
@@ -644,30 +644,31 @@ test('BNB and canonical BUSD values and the whole watch total update in INR with
     const assets = network === 'bnb' ? [
       { name: 'BNB', symbol: 'BNB', type: 'native', rawBalance: '1500000000000000000', decimals: 18, price: null },
       { name: 'Binance-Peg BUSD', symbol: 'BUSD', type: 'BEP-20', contract: BUSD_BSC, rawBalance: '2000000000000000000', decimals: 18, price: null },
+      { name: 'Binance-Peg BSC-USD', symbol: 'USDT', type: 'BEP-20', contract: USDT_BSC, rawBalance: '3000000000000000000', decimals: 18, price: null },
     ] : [zeroNative];
-    return { ok: true, json: async () => ({ coverage: network === 'bnb' ? 'bnb-and-busd' : 'complete', assets }) };
+    return { ok: true, json: async () => ({ coverage: network === 'bnb' ? 'bnb-and-stables' : 'complete', assets }) };
   };
   $('wallet-address').value = address1; submit(w, $('address-form'));
   for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
-  assert.equal(requests.length, 5); assert.equal($('asset-count').textContent, '2');
-  assert.equal($('total-value').textContent, '₹74,861.02');
+  assert.equal(requests.length, 5); assert.equal($('asset-count').textContent, '3');
+  assert.equal($('total-value').textContent, '₹75,112.51');
   assert.match($('asset-list').textContent, /BUSD/); assert.match($('asset-list').textContent, /₹74,700\.00/);
-  assert.match($('asset-list').textContent, /₹161\.02/);
+  assert.match($('asset-list').textContent, /₹161\.02/); assert.match($('asset-list').textContent, /₹251\.49/);
   assert.equal(w.document.querySelector('.balance-currency').textContent, 'INR');
   assert.equal($('rate-asof').hidden, false); assert.match($('rate-asof').textContent, /INR rate updated/);
   assert.doesNotMatch($('asset-list').textContent, /\bUSD\b|\$/);
-  quote = { currency: 'INR', usdToInr: 80, prices: { bnb: 500, busd: 1.02 } };
+  quote = { currency: 'INR', usdToInr: 80, prices: { bnb: 500, busd: 1.02, usdt: 1.05 } };
   w.dispatchEvent(new w.Event('pricing:update'));
-  assert.equal($('total-value').textContent, '₹60,163.20'); assert.equal(requests.length, 5);
-  quote = { currency: 'INR', usdToInr: 80, prices: { bnb: 500, busd: null } };
+  assert.equal($('total-value').textContent, '₹60,415.20'); assert.equal(requests.length, 5);
+  quote = { currency: 'INR', usdToInr: 80, prices: { bnb: 500, busd: null, usdt: 1.05 } };
   w.dispatchEvent(new w.Event('pricing:update'));
-  assert.equal($('total-value').textContent, '₹60,000.00');
+  assert.equal($('total-value').textContent, '₹60,252.00');
   assert.match($('asset-list').textContent, /Price unavailable/); assert.match($('value-note').textContent, /1 asset without a price/);
-  quote = { currency: 'INR', usdToInr: null, prices: { bnb: 500, busd: 1.02 } };
+  quote = { currency: 'INR', usdToInr: null, prices: { bnb: 500, busd: 1.02, usdt: 1.05 } };
   w.dispatchEvent(new w.Event('pricing:update'));
   assert.equal($('total-value').textContent, '—'); assert.match($('value-note').textContent, /INR exchange rate unavailable/);
-  assert.equal($('asset-list').querySelectorAll('tr').length, 2);
-  assert.equal(($('asset-list').textContent.match(/INR rate unavailable/g) || []).length, 2);
+  assert.equal($('asset-list').querySelectorAll('tr').length, 3);
+  assert.equal(($('asset-list').textContent.match(/INR rate unavailable/g) || []).length, 3);
   dom.window.close();
 });
 
@@ -687,7 +688,7 @@ test('a failed BUSD check stays incomplete and retry replaces the BNB result', a
   };
   $('wallet-address').value = address1; submit(w, $('address-form'));
   for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
-  assert.equal(directCalls, 1); assert.match($('scan-errors').textContent, /BUSD check unavailable/);
+  assert.equal(directCalls, 1); assert.match($('scan-errors').textContent, /BUSD\/USDT checks unavailable/);
   assert.equal($('retry-failed').hidden, false); assert.equal($('total-value').textContent, '₹49,800.00');
   complete = true; $('retry-failed').click();
   for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
@@ -696,7 +697,7 @@ test('a failed BUSD check stays incomplete and retry replaces the BNB result', a
   dom.window.close();
 });
 
-test('five wallets scan healthy networks while one slow network is capped at three', { timeout: 15000 }, async () => {
+test('five wallets scan healthy networks while one slow network is capped at four', { timeout: 15000 }, async () => {
   const dom = new JSDOM(fs.readFileSync('public/index.html', 'utf8'), { url: 'https://wallet.example/', runScripts: 'outside-only' });
   const w = dom.window; const $ = id => w.document.getElementById(id);
   const wallets = Array.from({ length: 5 }, (_, i) => ({ address: `0x${(i + 1).toString(16).padStart(40, '0')}` }));
@@ -719,12 +720,12 @@ test('five wallets scan healthy networks while one slow network is capped at thr
     w.eval(bundle); setPricing(w); w.eval(fs.readFileSync('public/app.js', 'utf8'));
     for (let i = 0; i < 100 && $('progress-percent').textContent !== '80%'; i++) await wait();
     assert.equal($('progress-percent').textContent, '80%');
-    assert.equal(held.length, 3, 'no more than three Ethereum checks occupy slots');
+    assert.equal(held.length, 4, 'no more than four Ethereum checks occupy slots');
     assert.equal($('asset-count').textContent, '20');
     assert.equal($('total-value').textContent, '₹3,320.00');
     assert.match($('value-note').textContent, /Partial results/);
-    assert.ok(peak <= 15, `global peak ${peak}`);
-    assert.ok(Object.values(peaks).every(value => value <= 3), JSON.stringify(peaks));
+    assert.ok(peak <= 20, `global peak ${peak}`);
+    assert.ok(Object.values(peaks).every(value => value <= 4), JSON.stringify(peaks));
     for (const wallet of wallets) assert.equal(calls.filter(call => call.address === wallet.address && call.network !== 'ethereum').length, 4);
     hold = false; held.forEach(resolve => resolve());
     for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();

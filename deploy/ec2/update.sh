@@ -23,8 +23,8 @@ previous_image=''
 
 # Check settings before stopping the current app. The limits are concurrent
 # checks inside one process, not permission to start more containers.
-worker_global=${WALLETO_SCAN_CONCURRENCY-12}
-worker_network=${WALLETO_SCAN_PER_NETWORK-3}
+worker_global=${WALLETO_SCAN_CONCURRENCY-24}
+worker_network=${WALLETO_SCAN_PER_NETWORK-4}
 worker_settings='disabled'
 worker_enabled=0
 trusted_host=''

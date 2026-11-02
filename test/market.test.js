@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createMarketService, CRYPTO_URL, FX_URL } = require('../lib/market');
-const { BUSD_BSC, usdPrice } = require('../lib/prices');
+const { BUSD_BSC, USDT_BSC, usdPrice } = require('../lib/prices');
 
 test('concurrent market requests are coalesced, cached and use observed BUSD and INR rates', async () => {
   let now = Date.parse('2026-01-10T12:00:00Z'); const calls = []; let offline = false;
@@ -12,17 +12,17 @@ test('concurrent market requests are coalesced, cached and use observed BUSD and
     if (offline) throw new Error('offline');
     return { ok: true, json: async () => url === FX_URL
       ? { result: 'success', base_code: 'USD', time_last_update_unix: at, rates: { INR: 83.5 } }
-      : { binancecoin: { usd: 612.34, last_updated_at: at }, 'binance-peg-busd': { usd: 0.972, last_updated_at: at }, bitcoin: { usd: 91000, last_updated_at: at } } };
+      : { binancecoin: { usd: 612.34, last_updated_at: at }, 'binance-peg-busd': { usd: 0.972, last_updated_at: at }, tether: { usd: 1.001, last_updated_at: at }, bitcoin: { usd: 91000, last_updated_at: at } } };
   } });
   const [first, second] = await Promise.all([service(), service()]);
   assert.deepEqual(first, second); assert.equal(calls.length, 2);
   assert.equal(first.currency, 'INR'); assert.equal(first.usdToInr, 83.5);
-  assert.equal(first.prices.bnb, 612.34); assert.equal(first.prices.busd, 0.972); assert.equal(first.prices.eth, null); assert.equal(Object.hasOwn(first.prices, 'trx'), false);
+  assert.equal(first.prices.bnb, 612.34); assert.equal(first.prices.busd, 0.972); assert.equal(first.prices.usdt, 1.001); assert.equal(first.prices.eth, null); assert.equal(Object.hasOwn(first.prices, 'trx'), false);
   assert.deepEqual(new Set(calls), new Set([CRYPTO_URL, FX_URL]));
   await service(); assert.equal(calls.length, 2);
   offline = true; now += 31 * 60 * 1000;
   const cached = await service(); assert.equal(calls.length, 4);
-  assert.equal(cached.prices.busd, 0.972); assert.equal(cached.usdToInr, 83.5);
+  assert.equal(cached.prices.busd, 0.972); assert.equal(cached.prices.usdt, 1.001); assert.equal(cached.usdToInr, 83.5);
   now += 2 * 60 * 60 * 1000;
   const expired = await service();
   assert.equal(expired.prices.busd, null); assert.equal(expired.prices.bnb, null);
@@ -48,10 +48,12 @@ test('bad, stale, missing or rate-limited provider data never invents prices or 
 });
 
 test('quotes identify canonical BUSD by contract and do not price spoofed symbols or collectibles', () => {
-  const quotes = { bnb: 600, busd: 0.97, eth: 2000 };
+  const quotes = { bnb: 600, busd: 0.97, usdt: 1.01, eth: 2000 };
   assert.equal(usdPrice({ type: 'native', symbol: 'BNB', price: null }, 'bnb', quotes), 600);
   assert.equal(usdPrice({ type: 'BEP-20', symbol: 'BUSD', contract: BUSD_BSC.toUpperCase(), price: null }, 'bnb', quotes), 0.97);
   assert.equal(usdPrice({ type: 'BEP-20', symbol: 'BUSD', contract: '0x123', price: null }, 'bnb', quotes), null);
+  assert.equal(usdPrice({ type: 'BEP-20', symbol: 'USDT', contract: USDT_BSC.toUpperCase(), price: null }, 'bnb', quotes), 1.01);
+  assert.equal(usdPrice({ type: 'BEP-20', symbol: 'USDT', contract: '0x123', price: null }, 'bnb', quotes), null);
   assert.equal(usdPrice({ type: 'ERC-721', price: 123 }, 'ethereum', quotes), null);
   assert.equal(usdPrice({ type: 'native', price: '4' }, 'ethereum', {}), 4);
   assert.equal(usdPrice({ type: 'token', price: -1 }, 'base', {}), null);
