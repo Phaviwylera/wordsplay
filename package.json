@@ -4,8 +4,8 @@
   "private": true,
   "scripts": {
     "start": "npm run build && node server.js",
-    "test": "node --test",
-    "build": "esbuild src/wallet.js --bundle --platform=browser --format=iife --outfile=public/wallet-bundle.js --minify && esbuild src/derive.js --bundle --platform=browser --format=iife --outfile=public/derive-bundle.js --minify"
+    "test": "node scripts/build-offline-private-key-converter.js && node --test",
+    "build": "esbuild src/wallet.js --bundle --platform=browser --format=iife --outfile=public/wallet-bundle.js --minify && esbuild src/derive.js --bundle --platform=browser --format=iife --outfile=public/derive-bundle.js --minify && node scripts/build-offline-private-key-converter.js"
   },
   "engines": {
     "node": ">=22.13.0"
