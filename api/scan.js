@@ -7,7 +7,7 @@ module.exports = async function handler(req, res) {
   const { address, network } = req.query;
   if (!validAddress(address) || !Object.hasOwn(NETWORKS, network)) return res.status(400).json({ error: 'A valid address and supported network are required.' });
   const family = classifyAddress(address).family;
-  if ((network === 'bitcoin' && family !== 'bitcoin') || (network === 'tron' && family !== 'tron') || (!['bitcoin', 'tron'].includes(network) && family !== 'evm')) return res.status(400).json({ error: 'Address does not match network.' });
+  if ((network === 'bitcoin' && family !== 'bitcoin') || (network !== 'bitcoin' && family !== 'evm')) return res.status(400).json({ error: 'Address does not match network.' });
   try { return res.status(200).json(await scanWallet(address, network)); }
   catch (error) {
     console.error('Scan failed:', error.message);

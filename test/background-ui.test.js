@@ -22,7 +22,7 @@ async function until(check, timeout = 5000) {
   const start = Date.now();
   while (!check()) { if (Date.now() - start > timeout) throw new Error('File dashboard UI did not finish'); await wait(); }
 }
-function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets = null, assets, wallets, hiddenAddresses, restoreFails = false, incomplete = 0, getPhrase, dashboardHook, watchFetch, recover, market = { currency: 'INR', usdToInr: 83, prices: {} }, knownValue, jobStatus = 'finished', timers } = {}) {
+function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets = null, assets, recentAssets = [], wallets, hiddenAddresses, restoreFails = false, incomplete = 0, getPhrase, dashboardHook, watchFetch, recover, generate, jobKind, generationActive = false, market = { currency: 'INR', usdToInr: 83, prices: {} }, knownValue, jobStatus = 'finished', timers } = {}) {
   const dom = new JSDOM(html, { url, runScripts: 'outside-only' });
   const w = dom.window; const $ = id => w.document.getElementById(id);
   if (timers) { const original = w.setTimeout.bind(w); w.setTimeout = (fn, delay, ...args) => { timers.push(delay); return original(fn, delay, ...args); }; }
@@ -52,6 +52,7 @@ function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets 
     const target = String(resource); requests.push({ url: target, options });
     if (target.startsWith('/api/scan')) return watchFetch ? watchFetch(target, options) : { ok: true, json: async () => ({ assets: [{ ...native, rawBalance: '0' }] }) };
     if (target === '/api/background/reconnect') return recover ? recover(options) : { ok: false };
+    if (target === '/api/background/jobs/generate') return generate ? generate(options) : { ok: false, status: 404 };
     const requestedId = target.match(/\/jobs\/([a-f0-9]{64})/)?.[1];
     assert.equal(options.headers.Authorization, `Bearer ${requestedId === id2 ? token2 : token}`);
     if (target.includes('/dashboard')) {
@@ -62,10 +63,11 @@ function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets 
       const visibleWallets = hidden ? allWallets.filter(row => !hidden.has(row.address)) : allWallets;
       const hiddenCount = hidden?.size || 0;
       return { ok: true, json: async () => ({
-        id: requestedId, status: jobStatus, wallets: allWallets.length, ...(hidden ? { hiddenWallets: hiddenCount, visibleWallets: visibleWallets.length } : {}), total: allWallets.length * 5, completed: allWallets.length * 5,
+        id: requestedId, status: jobStatus, ...(jobKind ? { kind: jobKind, generationActive, generationTarget: 100 } : {}), wallets: allWallets.length, ...(hidden ? { hiddenWallets: hiddenCount, visibleWallets: visibleWallets.length } : {}), total: allWallets.length * 5, completed: allWallets.length * 5,
         invalid: 0, incomplete: currentIncomplete, phraseMatching: true, retainsPhrases: true, market,
         knownValue: knownValue ?? allAssets.length * 2, unpriced: 0, assetCount: allAssets.length, filteredAssetCount: filtered.length,
-        assetOffset, walletOffset, network: filter, assets: filtered.slice(assetOffset, assetOffset + 100).map(row => ({ phraseAvailable: true, ...row })), walletPage: visibleWallets.slice(walletOffset, walletOffset + 100),
+        assetOffset, walletOffset, network: filter, assets: filtered.slice(assetOffset, assetOffset + 100).map(row => ({ phraseAvailable: true, ...row })),
+        recentAssets: recentAssets.filter(row => filter === 'all' || row.network === filter).map(row => ({ phraseAvailable: true, ...row })), walletPage: visibleWallets.slice(walletOffset, walletOffset + 100),
       }) };
     }
     if (target.includes('/phrase')) {
@@ -76,6 +78,7 @@ function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets 
       if (restoreFails) return { ok: false };
       const restored = hidden.size; hidden.clear(); return { ok: true, json: async () => ({ restored }) };
     }
+    if (target.endsWith('/stop-generation')) { generationActive = false; return { ok: true, json: async () => ({ ok: true }) }; }
     if (target.endsWith('/retry') || target.endsWith('/refresh-bnb')) { currentIncomplete = 0; return { ok: true, json: async () => ({ ok: true }) }; }
     if (options.method === 'DELETE') return { ok: true, json: async () => ({ ok: true }) };
     throw new Error(`Unexpected request: ${target}`);
@@ -566,5 +569,107 @@ test('storage failure after token rotation leaves the job visible for the curren
     assert.equal($('portfolio-source').value, `file:${id}`);
     assert.match($('import-status').textContent, /storage failed.*keep this page open/i);
     assert.equal(w.localStorage.getItem('walleto.background-jobs'), null);
+  } finally { dom.window.close(); }
+});
+
+test('one click starts continuous EC2 generation, preserves existing jobs and never generates phrases in the browser', async () => {
+  let release; const delayed = new Promise(resolve => { release = resolve; });
+  const ctx = setup({ savedJob: true, generate: () => delayed });
+  const { dom, w, $, requests } = ctx;
+  try {
+    await until(() => $('asset-list').querySelector('.asset-open'));
+    $('seed-phrases').value = phrase2;
+    $('generate-phrase').click(); $('generate-phrase').click();
+    assert.equal($('generate-phrase').disabled, true);
+    assert.equal(requests.filter(item => item.url === '/api/background/jobs/generate').length, 1);
+    const creation = requests.find(item => item.url === '/api/background/jobs/generate');
+    assert.equal(creation.options.method, 'POST'); assert.equal(creation.options.body, '{}');
+    assert.equal(creation.options.headers['Content-Type'], 'application/json');
+    assert.equal($('seed-phrases').value, phrase2, 'existing pasted text is untouched');
+    const third = { id: 'e'.repeat(64), token: 'f'.repeat(64) };
+    w.localStorage.setItem('walleto.background-jobs', JSON.stringify([{ id, token }, third]));
+    release({ status: 202, json: async () => ({ id: id2, token: token2, kind: 'generated' }) });
+    await until(() => $('portfolio-source').value === `file:${id2}` && !$('generate-phrase').disabled);
+    assert.deepEqual(JSON.parse(w.localStorage.getItem('walleto.background-jobs')), [{ id, token }, third, { id: id2, token: token2, kind: 'generated' }]);
+    assert.match($('portfolio-source').selectedOptions[0].textContent, /Generated scan 1/);
+    assert.match($('import-status').textContent, /started.*continues generating and scanning/i);
+    assert.equal(ctx.deriveCalls(), 0); assert.equal(ctx.directCalls(), 0);
+    assert.equal(w.localStorage.getItem('walleto.wallets'), null);
+    assert.doesNotMatch(w.localStorage.getItem('walleto.background-jobs'), /abandon|test test/);
+    assert.equal($('seed-phrases').value, phrase2);
+  } finally { release?.({ status: 500 }); dom.window.close(); }
+});
+
+test('generated scans require the private tunnel and fail closed when links cannot be saved', async () => {
+  const publicPage = setup({ url: 'https://wallet.example/' });
+  try {
+    publicPage.$('generate-phrase').click();
+    assert.match(publicPage.$('import-status').textContent, /private SSH tunnel/i);
+    assert.equal(publicPage.requests.length, 0); assert.equal(publicPage.deriveCalls(), 0);
+  } finally { publicPage.dom.window.close(); }
+  const local = setup({ generate: () => { throw new Error('must not call'); } });
+  try {
+    local.w.localStorage.setItem('walleto.background-jobs', '{malformed');
+    local.$('generate-phrase').click();
+    assert.match(local.$('import-status').textContent, /invalid.*No phrase was generated/i);
+    assert.equal(local.requests.length, 0);
+  } finally { local.dom.window.close(); }
+});
+
+test('a positive detected during scanning appears outside the paginated table and opens the retained result', async () => {
+  const rows = Array.from({ length: 100 }, (_, i) => ({ address, network: 'ethereum', status: 'done', asset: { ...native, name: `Earlier ${i}` } }));
+  const recent = [];
+  const ctx = setup({ savedJob: true, assets: rows, recentAssets: recent, jobStatus: 'scanning' });
+  const { dom, w, $ } = ctx;
+  try {
+    await until(() => $('asset-list').querySelectorAll('.asset-open').length === 100);
+    assert.equal($('recent-finds').hidden, true);
+    const found = { address: address2, network: 'base', status: 'done', asset: { ...native, name: 'New positive' } };
+    rows.push(found); recent.unshift(found);
+    await w.fileScan.refresh();
+    assert.match($('progress-text').textContent, /Checking balances on EC2/);
+    assert.equal($('asset-count').textContent, '101');
+    assert.equal($('asset-list').textContent.includes('New positive'), false);
+    assert.equal($('recent-finds').hidden, false);
+    assert.match($('recent-find-list').textContent, /New positive/);
+    $('recent-find-list').querySelector('button').click();
+    assert.equal($('asset-export-address').textContent, address2);
+    $('asset-export-reveal').click();
+    await until(() => $('asset-export-phrase').textContent === phrase2);
+    $('asset-export-close').click();
+    $('asset-next').click();
+    await until(() => $('asset-list').textContent.includes('New positive'));
+    assert.match($('recent-find-list').textContent, /New positive/);
+    $('portfolio-source').value = 'watch'; $('portfolio-source').dispatchEvent(new w.Event('change'));
+    assert.equal($('recent-finds').hidden, true);
+  } finally { dom.window.close(); }
+});
+
+test('reconnecting a generated job preserves its source label and other browser links', async () => {
+  const code = 'e'.repeat(64);
+  const ctx = setup({ savedJob: true, recover: () => ({ ok: true, json: async () => ({ id: id2, token: token2, kind: 'generated' }) }) });
+  const { dom, w, $ } = ctx;
+  try {
+    await until(() => $('asset-list').querySelector('.asset-open'));
+    $('file-recovery-code').value = code; $('file-reconnect').click();
+    await until(() => $('portfolio-source').value === `file:${id2}`);
+    assert.match($('portfolio-source').selectedOptions[0].textContent, /Generated scan 1/);
+    assert.deepEqual(JSON.parse(w.localStorage.getItem('walleto.background-jobs')), [{ id, token }, { id: id2, token: token2, kind: 'generated' }]);
+    assert.equal($('file-recovery-code').value, '');
+  } finally { dom.window.close(); }
+});
+
+test('the generated job provides an authenticated stop control and continues the queued checks', async () => {
+  const ctx = setup({ savedJob: true, jobStatus: 'scanning', jobKind: 'generated', generationActive: true });
+  const { dom, $, requests } = ctx;
+  try {
+    await until(() => !$('stop-generation').hidden);
+    assert.match($('progress-text').textContent, /Generating and scanning on EC2/);
+    assert.match($('progress-detail').textContent, /up to 100 per second/);
+    $('stop-generation').click();
+    await until(() => $('stop-generation').hidden && $('progress-text').textContent.includes('Finishing queued scans'));
+    const stop = requests.find(item => item.url.endsWith('/stop-generation'));
+    assert.equal(stop.options.method, 'POST'); assert.equal(stop.options.headers.Authorization, `Bearer ${token}`);
+    assert.match($('import-status').textContent, /stopped.*finish the already queued scans/i);
   } finally { dom.window.close(); }
 });

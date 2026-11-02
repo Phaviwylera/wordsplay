@@ -96,7 +96,7 @@ test('restoring does not rescan, and refresh exposes pending and previous positi
   } finally { dom.window.close(); }
 });
 
-test('Bitcoin and TRON zero results hide reversibly with a limited-coverage warning', async () => {
+test('Bitcoin zero results hide reversibly while retired addresses remain inert and recoverable', async () => {
   const btc = 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4';
   const tron = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
   const calls = [];
@@ -107,13 +107,14 @@ test('Bitcoin and TRON zero results hide reversibly with a limited-coverage warn
   const { dom, $, w } = ctx;
   try {
     await until(() => !$('refresh').disabled);
-    assert.deepEqual(calls.sort(), ['bitcoin', 'tron']);
+    assert.deepEqual(calls, ['bitcoin']);
     assert.equal($('wallet-count').textContent, '0');
-    assert.match($('restore-hidden').textContent, /\(2\)/);
+    assert.match($('restore-hidden').textContent, /\(1\)/);
     assert.match($('zero-help').textContent, /Bitcoin inscriptions may be missed/i);
     $('restore-hidden').click();
-    assert.equal($('wallet-count').textContent, '2');
+    assert.equal($('wallet-count').textContent, '1');
     assert.equal(JSON.parse(w.localStorage.getItem('walleto.wallets')).length, 2);
+    assert.ok(JSON.parse(w.localStorage.getItem('walleto.wallets')).some(item => item.address === tron));
   } finally { dom.window.close(); }
 });
 

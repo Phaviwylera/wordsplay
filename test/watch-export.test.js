@@ -260,19 +260,6 @@ test('untrusted asset names remain text in the row and export dialog', async () 
 });
 
 
-test('generated phrases can be exported for a positive asset', async () => {
-  const ctx = setup(); const { dom, w, $, blobs } = ctx;
-  w.crypto.getRandomValues = bytes => { bytes.fill(0); return bytes; };
-  $('generate-phrase').click();
-  assert.equal($('seed-phrases').value, phrase2);
-  submit(w, $('seed-form'));
-  await until(() => !$('seed-form').querySelector('button[type="submit"]').disabled && !$('refresh').disabled);
-  assetButton(w, address2).click();
-  $('asset-export-download').click();
-  assert.equal(await blobs[0].text(), `Wallet address: ${address2}\nRecovery phrase: ${phrase2}\n`);
-  dom.window.close();
-});
-
 test('removing all wallets forgets every retained phrase', async () => {
   const ctx = setup(); const { dom, w, $, blobs } = ctx;
   await seedImport(ctx, `${phrase1}\n${phrase2}`);

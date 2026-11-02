@@ -236,3 +236,11 @@ td:last-child,th:last-child{text-align:right}
 .asset-export-unlock #asset-export-unlock-status{margin-top:8px;color:#985047}
 
 @media(max-width:560px){.heading{align-items:flex-start;flex-direction:column}.heading-side{justify-content:flex-start}}
+
+/* Keep recent EC2 discoveries visible independently of the asset table page. */
+.recent-finds{margin:0 20px 15px;padding:13px;border:1px solid #ded8ef;border-radius:8px;background:#faf9ff}
+.recent-finds-heading{display:flex;flex-wrap:wrap;align-items:baseline;gap:7px 12px;margin-bottom:10px}
+.recent-finds-heading strong{font-size:12px;color:#514984}.recent-finds-heading span{font-size:11px;color:#777286;line-height:1.4}
+.recent-find-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:7px}
+.recent-find{min-width:0;padding:9px 10px;border:1px solid #e5e1f0;border-radius:6px;background:#fff;text-align:left;color:#39354f}
+.recent-find:hover{border-color:#aaa0ce}.recent-find strong,.recent-find small{display:block;overflow-wrap:anywhere}.recent-find strong{font-size:11px}.recent-find small{margin-top:4px;font-size:10px;line-height:1.4;color:#777286}

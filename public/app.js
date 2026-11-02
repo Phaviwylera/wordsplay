@@ -1,26 +1,31 @@
 const networks = {
   ethereum: { name: 'Ethereum', short: 'ETH', color: '#627eea' }, base: { name: 'Base', short: 'B', color: '#1652f0' },
   arbitrum: { name: 'Arbitrum', short: 'A', color: '#28a0f0' }, optimism: { name: 'Optimism', short: 'OP', color: '#ff0420' },
-  bnb: { name: 'BNB Smart Chain', short: 'BNB', color: '#d39b16' }, bitcoin: { name: 'Bitcoin', short: 'BTC', color: '#f7931a' }, tron: { name: 'TRON', short: 'TRX', color: '#eb0029' },
+  bnb: { name: 'BNB Smart Chain', short: 'BNB', color: '#d39b16' }, bitcoin: { name: 'Bitcoin', short: 'BTC', color: '#f7931a' },
 };
 const { classifyAddress } = window.watchAddressTools;
 const { usdPrice, positive } = window.priceTools;
 const { inspectResult, mergeAssets } = window.scanResultTools;
 const fileScan = window.fileScan || null;
-const familyNetworks = { evm: ['ethereum', 'base', 'arbitrum', 'optimism', 'bnb'], bitcoin: ['bitcoin'], tron: ['tron'] };
+const familyNetworks = { evm: ['ethereum', 'base', 'arbitrum', 'optimism', 'bnb'], bitcoin: ['bitcoin'] };
 const keyFor = address => classifyAddress(address)?.key;
 const networksFor = address => familyNetworks[classifyAddress(address)?.family] || [];
-const limitedNetworks = new Set(['bitcoin', 'tron', 'bnb']);
+const limitedNetworks = new Set(['bitcoin', 'bnb']);
 const $ = (selector) => document.querySelector(selector);
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 const shortAddress = (address) => `${address.slice(0, 6)}...${address.slice(-4)}`;
-let wallets = [];
+let wallets = []; let retiredWallets = [];
 try {
   const saved = JSON.parse(localStorage.getItem('walleto.wallets') || '[]');
   if (Array.isArray(saved)) {
     const seen = new Set();
     wallets = saved.filter(w => {
-      if (!w || !classifyAddress(w.address)) return false;
+      if (!w || !classifyAddress(w.address)) {
+        // Keep old unsupported public addresses inert in browser storage so
+        // changing supported networks does not silently delete user records.
+        if (w && typeof w.address === 'string' && /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(w.address)) retiredWallets.push({ address: w.address, ...(w.source === 'seed' ? { source: 'seed' } : {}), ...(w.hidden === true ? { hidden: true } : {}) });
+        return false;
+      }
       const address = keyFor(w.address);
       if (seen.has(address)) return false;
       seen.add(address); return true;
@@ -33,6 +38,8 @@ const sessionPhrases = new Map();
 let pendingPhraseImport = null;
 let phraseSessionVersion = 0;
 let renderedAssets = [];
+let renderedRecentAssets = [];
+let recentMarkup = '';
 let activeExport = null;
 let exportVisibilityVersion = 0;
 let exportOpener = null;
@@ -62,7 +69,7 @@ let persistTimer = null;
 let storageDirty = false;
 function persist() {
   if (persistTimer !== null) { clearTimeout(persistTimer); persistTimer = null; }
-  try { localStorage.setItem('walleto.wallets', JSON.stringify(wallets)); storageDirty = false; return true; }
+  try { localStorage.setItem('walleto.wallets', JSON.stringify([...wallets, ...retiredWallets])); storageDirty = false; return true; }
   catch (_) { storageDirty = true; return false; }
 }
 function scheduleWalletPersist() {
@@ -92,7 +99,7 @@ function addAddresses(addresses, source = 'address') {
       if (source === 'seed' && existing.source !== 'seed') { existing.source = 'seed'; changed = true; }
       continue;
     }
-    // Bech32 is case-insensitive; Base58 addresses (Bitcoin/TRON) are not.
+    // Bech32 is case-insensitive; Bitcoin Base58 addresses are not.
     const storedAddress = /^bc1/i.test(address) ? normalized : address;
     const wallet = source === 'seed' ? { address: storedAddress, source: 'seed' } : { address: storedAddress };
     byAddress.set(normalized, wallet);
@@ -178,12 +185,33 @@ function renderHiddenControls(hidden, total, file) {
   $('#restore-hidden').disabled = hidden === 0;
   $('#restore-hidden').textContent = `Restore hidden wallets (${hidden.toLocaleString()})`;
   $('#zero-help').hidden = total === 0;
-  $('#zero-help').textContent = 'Wallets with no assets found are hidden only after all supported checks succeed. Limited token coverage: other chains, tokens and Bitcoin inscriptions may be missed; incomplete checks stay visible.' + (file ? ' Restoring shows saved addresses and checks; recovery phrases for completed empty file wallets may have been discarded.' : '');
+  $('#zero-help').textContent = 'Wallets with no assets found are hidden only after all supported checks succeed. Limited token coverage: other chains, tokens and Bitcoin inscriptions may be missed; incomplete checks stay visible.' + (file ? ' Restoring shows saved addresses and checks; recovery phrases for completed empty server wallets may have been discarded.' : '');
+}
+function fileAssetItems(rows, data, state) {
+  if (!Array.isArray(rows)) return [];
+  return rows.flatMap(row => {
+    const asset = row.asset; const meta = networks[row.network];
+    if (!meta || !classifyAddress(row.address) || !asset || typeof asset.rawBalance !== 'string' || !/^\d+$/.test(asset.rawBalance)) return [];
+    const balance = amount(asset.rawBalance, asset.decimals); const nft = /(?:ERC|BEP)-(?:721|1155)/i.test(asset.type || '');
+    const price = balance === null ? null : usdPrice(asset, row.network, data.market?.prices || {});
+    return [{ ...asset, name: typeof asset.name === 'string' && asset.name ? asset.name : 'Unknown asset', symbol: typeof asset.symbol === 'string' && asset.symbol ? asset.symbol : 'UNKNOWN',
+      stale: Boolean(asset.stale || ['pending', 'running'].includes(row.status) || (['partial', 'failed'].includes(row.status) && asset.stale === undefined)), balance, price, nft, network: row.network, meta, checkStatus: row.status, wallet: { address: row.address, source: 'file' }, fileJobId: state.jobId,
+      remotePhraseAvailable: Boolean(row.phraseAvailable && data.phraseMatching && data.retainsPhrases) }];
+  });
+}
+function renderRecentFinds(items) {
+  renderedRecentAssets = items;
+  $('#recent-finds').hidden = !items.length;
+  const markup = items.map((asset, index) => {
+    const note = asset.stale ? ' · previous or incomplete' : ['partial', 'failed'].includes(asset.checkStatus) ? ' · check incomplete' : '';
+    return `<button type="button" class="recent-find" data-recent-index="${index}" aria-haspopup="dialog"><strong>${escapeHtml(asset.name)} · ${escapeHtml(quantity(asset.balance))} ${escapeHtml(asset.symbol)}</strong><small>${escapeHtml(asset.meta.name)} · ${escapeHtml(shortAddress(asset.wallet.address))}${escapeHtml(note)}</small></button>`;
+  }).join('');
+  if (markup !== recentMarkup) { $('#recent-find-list').innerHTML = markup; recentMarkup = markup; }
 }
 function renderFile() {
-  const state = fileScan?.snapshot() || { hasJob: false, uploading: false, data: null, error: 'Server file import is unavailable.', view: {} };
+  const state = fileScan?.snapshot() || { hasJob: false, uploading: false, data: null, error: 'Server import is unavailable.', view: {} };
   const data = state.data;
-  $('#asset-description').textContent = 'Server-scanned file results. Select an asset to export its wallet.';
+  $('#asset-description').textContent = 'Server-scanned results. Select an asset to export its wallet.';
   $('#wallet-description').textContent = 'Addresses derived and scanned on EC2.';
   const totalWallets = data?.wallets || 0; const hiddenWallets = data?.hiddenWallets || 0;
   const count = data?.visibleWallets ?? totalWallets; const assetCount = data?.assetCount || 0; const filteredCount = data?.filteredAssetCount || 0;
@@ -193,21 +221,14 @@ function renderFile() {
   if (hasView && (nextAssetPage !== fileAssetPage || nextWalletPage !== fileWalletPage)) {
     fileAssetPage = nextAssetPage; fileWalletPage = nextWalletPage; syncFileView(); return;
   }
-  const items = hasView ? data.assets.flatMap(row => {
-    const asset = row.asset; const meta = networks[row.network];
-    if (!meta || !classifyAddress(row.address) || !asset || typeof asset.rawBalance !== 'string' || !/^\d+$/.test(asset.rawBalance)) return [];
-    const balance = amount(asset.rawBalance, asset.decimals); const nft = /(?:ERC|BEP)-(?:721|1155)/i.test(asset.type || '');
-    // The server's page and global total use the same market snapshot.
-    const price = balance === null ? null : usdPrice(asset, row.network, data.market?.prices || {});
-    return [{ ...asset, name: typeof asset.name === 'string' && asset.name ? asset.name : 'Unknown asset', symbol: typeof asset.symbol === 'string' && asset.symbol ? asset.symbol : 'UNKNOWN',
-      stale: Boolean(asset.stale || ['pending', 'running'].includes(row.status) || (['partial', 'failed'].includes(row.status) && asset.stale === undefined)), balance, price, nft, network: row.network, meta, checkStatus: row.status, wallet: { address: row.address, source: 'file' }, fileJobId: state.jobId,
-      remotePhraseAvailable: Boolean(row.phraseAvailable && data.phraseMatching && data.retainsPhrases) }];
-  }) : [];
+  const items = hasView ? fileAssetItems(data.assets, data, state) : [];
+  const recent = hasView ? fileAssetItems(data.recentAssets, data, state) : [];
+  renderRecentFinds(recent);
   const running = data && ['importing', 'scanning'].includes(data.status);
   const rate = positive(data?.market?.usdToInr);
   const unavailableValue = !data || !Number.isFinite(data.knownValue) || (data.knownValue === 0 && (running || data.status === 'failed' || data.incomplete || data.unpriced)) || (!rate && count > 0);
   $('#total-value').textContent = unavailableValue ? '—' : count ? inrValue(data.knownValue, rate) : money(0);
-  $('#value-note').textContent = !data ? (state.uploading ? 'Uploading to the server…' : state.hasJob ? 'Connecting to EC2…' : 'Upload a .txt file to begin') : !rate && count ? 'INR exchange rate unavailable · refresh to retry' : data.status === 'failed' ? 'File processing failed · saved results may be partial or previous' : running ? 'Partial results while EC2 scans · previous balances may be shown' : data.incomplete ? 'Partial results · some balances may be previous' : data.unpriced ? `${data.unpriced} asset${data.unpriced === 1 ? '' : 's'} without a price` : 'Across this uploaded file';
+  $('#value-note').textContent = !data ? (state.uploading ? 'Uploading to the server…' : state.hasJob ? 'Connecting to EC2…' : 'Upload a .txt file to begin') : !rate && count ? 'INR exchange rate unavailable · refresh to retry' : data.status === 'failed' ? 'Server processing failed · saved results may be partial or previous' : running ? 'Partial results while EC2 scans · previous balances may be shown' : data.incomplete ? 'Partial results · some balances may be previous' : data.unpriced ? `${data.unpriced} asset${data.unpriced === 1 ? '' : 's'} without a price` : data.kind === 'generated' ? 'Across this generated scan' : 'Across this uploaded file';
   renderRateTime(data?.market);
   $('#wallet-count').textContent = $('#wallet-badge').textContent = count;
   $('#asset-count').textContent = assetCount; $('#asset-badge').textContent = filteredCount;
@@ -225,23 +246,24 @@ function renderFile() {
   if (!items.length) {
     const empty = $('#empty-state');
     empty.querySelector('h3').textContent = state.hasJob && (!data || !hasView) ? 'Loading server results' : 'No assets to show';
-    empty.querySelector('p').textContent = state.uploading ? 'The file must finish uploading before EC2 can scan it.' : running ? 'EC2 is still processing the file and checking balances.' : data?.incomplete ? 'Some checks are incomplete; retry them to avoid missing assets.' : state.hasJob && (!data || !hasView) ? 'Fetching paginated results from EC2.' : state.hasJob ? 'No positive balances found for this view.' : 'Upload a .txt file to scan it on EC2.';
+    empty.querySelector('p').textContent = state.uploading ? 'The file must finish uploading before EC2 can scan it.' : running ? 'EC2 is still processing the job and checking balances.' : data?.incomplete ? 'Some checks are incomplete; retry them to avoid missing assets.' : state.hasJob && (!data || !hasView) ? 'Fetching paginated results from EC2.' : state.hasJob ? 'No positive balances found for this view.' : 'Upload a .txt file to scan it on EC2.';
     empty.querySelector('button').hidden = true;
   }
   $('#remove-all').disabled = true; $('#remove-all').textContent = `Remove all wallets (${wallets.length})`;
-  $('#remove-all').title = 'File results are managed with Delete file results & phrases.';
+  $('#remove-all').title = 'Server results are managed with Delete server results & phrases.';
   renderHiddenControls(hiddenWallets, totalWallets, true);
   $('#refresh').title = 'Reload server results and prices';
   $('#refresh').disabled = !state.hasJob || state.uploading; $('#refresh').classList.toggle('spinning', Boolean(state.loading));
   $('#scan-progress').hidden = !(state.hasJob || state.uploading || state.error);
   const percentage = state.uploading ? state.uploadPercent : data?.total ? Math.round(data.completed / data.total * 100) : data?.status === 'finished' ? 100 : 0;
-  $('#progress-text').textContent = state.uploading ? 'Uploading file to EC2…' : !data ? (state.error ? 'Server connection unavailable' : 'Connecting to EC2…') : data.status === 'importing' ? 'Processing file on EC2…' : data.status === 'scanning' ? 'Checking balances on EC2…' : data.status === 'failed' ? 'Server file processing failed' : data.incomplete ? 'Server scan finished with incomplete checks' : 'Server scan complete';
+  $('#progress-text').textContent = state.uploading ? 'Uploading file to EC2…' : !data ? (state.error ? 'Server connection unavailable' : 'Connecting to EC2…') : data.status === 'importing' ? 'Processing file on EC2…' : data.status === 'scanning' ? (data.kind === 'generated' ? (data.generationActive ? 'Generating and scanning on EC2…' : 'Finishing queued scans on EC2…') : 'Checking balances on EC2…') : data.status === 'failed' ? 'Server processing failed' : data.incomplete ? 'Server scan finished with incomplete checks' : 'Server scan complete';
   $('#progress-percent').textContent = `${percentage}%`; $('#progress-bar').value = percentage;
-  $('#progress-detail').textContent = state.uploading ? 'Keep this laptop on until the upload is confirmed. EC2 continues scanning after confirmation.' : data ? `${data.wallets.toLocaleString()} wallets · ${data.completed.toLocaleString()} of ${data.total.toLocaleString()} network checks · ${data.incomplete.toLocaleString()} incomplete${data.invalid ? ` · ${data.invalid.toLocaleString()} invalid lines` : ''}` : state.hasJob ? 'Job credentials are stored in this browser for reconnection.' : 'No file is being processed locally.';
+  $('#progress-detail').textContent = state.uploading ? 'Keep this laptop on until the upload is confirmed. EC2 continues scanning after confirmation.' : data ? `${data.wallets.toLocaleString()} wallets · ${data.completed.toLocaleString()} of ${data.total.toLocaleString()} network checks · ${data.incomplete.toLocaleString()} incomplete${data.invalid ? ` · ${data.invalid.toLocaleString()} invalid lines` : ''}${data.kind === 'generated' ? (data.generationActive ? ' · generation target up to 100 per second; rate depends on scanning capacity' : data.generationReason ? ` · ${data.generationReason}` : '') : ''}` : state.hasJob ? 'Job credentials are stored in this browser for reconnection.' : 'No file is being processed locally.';
   const error = state.error || (data?.status === 'failed' ? (data.error || 'Server processing failed.') : '') || (state.storageWarning ? 'Browser storage failed. Keep this page open or access to this job may be lost.' : '');
   $('#scan-errors').hidden = !error; $('#scan-errors').textContent = error;
   $('#scan-status').hidden = !error; $('#scan-status').textContent = error;
   $('#retry-failed').hidden = !(data?.status === 'finished' && data.incomplete > 0); $('#retry-failed').disabled = false; $('#retry-failed').textContent = 'Retry incomplete checks';
+  $('#stop-generation').hidden = !(data?.kind === 'generated' && data.generationActive);
   $('#file-refresh-bnb').hidden = !(data?.status === 'finished' && totalWallets > 0);
   $('#file-remove').hidden = !data || !['finished', 'failed'].includes(data.status);
 }
@@ -249,12 +271,14 @@ let sourceOptionsKey = '';
 function renderPortfolioSource() {
   const state = fileScan?.snapshot() || { jobs: [], jobId: null, uploading: false };
   const select = $('#portfolio-source');
-  const key = `${state.jobs.map(item => item.id).join(',')}:${state.uploading}`;
+  const key = `${state.jobs.map(item => `${item.id}:${item.kind || 'upload'}`).join(',')}:${state.uploading}`;
   if (key !== sourceOptionsKey) {
     select.replaceChildren();
     const watch = document.createElement('option'); watch.value = 'watch'; watch.textContent = 'Tracked addresses'; select.appendChild(watch);
-    state.jobs.forEach((item, index) => {
-      const option = document.createElement('option'); option.value = `file:${item.id}`; option.textContent = `Uploaded file ${index + 1}`;
+    let uploads = 0; let generated = 0;
+    state.jobs.forEach(item => {
+      const option = document.createElement('option'); option.value = `file:${item.id}`;
+      option.textContent = item.kind === 'generated' ? `Generated scan ${++generated}` : `Uploaded file ${++uploads}`;
       option.disabled = state.uploading; select.appendChild(option);
     });
     if (state.uploading || !state.jobId) {
@@ -267,9 +291,11 @@ function renderPortfolioSource() {
 function render() {
   renderPortfolioSource();
   if (viewMode === 'file') return renderFile();
+  renderRecentFinds([]);
   $('#asset-description').textContent = 'Balances across your tracked wallets. Select an asset to export its wallet.';
   $('#wallet-description').textContent = 'Your tracked addresses.';
   $('#file-remove').hidden = true;
+  $('#stop-generation').hidden = true;
   $('#file-refresh-bnb').hidden = true;
   $('#remove-all').title = 'Remove all watch-list entries';
   $('#retry-failed').textContent = 'Retry failed checks';
@@ -479,10 +505,10 @@ async function scan(mode = false) {
   }
   const taskCount = scanData.total - scanData.completed;
   loading = taskCount > 0; render();
-  const families = { evm: [], bitcoin: [], tron: [] };
+  const families = { evm: [], bitcoin: [] };
   for (const wallet of scanWallets) families[classifyAddress(wallet.address).family].push(wallet);
   const byNetwork = Object.fromEntries(Object.keys(networks).map(network => [network,
-    network === 'bitcoin' ? families.bitcoin : network === 'tron' ? families.tron : families.evm]));
+    network === 'bitcoin' ? families.bitcoin : families.evm]));
   const retryByNetwork = Object.fromEntries(Object.keys(networks).map(network => [network, []]));
   if (retry) for (const item of retryTasks) retryByNetwork[item.network].push(item.wallet);
   const cursor = Object.fromEntries(Object.keys(networks).map(network => [network, 0]));
@@ -647,6 +673,12 @@ $('#asset-list').addEventListener('click', event => {
   const asset = renderedAssets[Number(row.dataset.assetIndex)];
   if (asset) openAssetExport(asset, row.querySelector('.asset-open'));
 });
+$('#recent-find-list').addEventListener('click', event => {
+  const button = event.target.closest('button[data-recent-index]');
+  if (!button || !$('#recent-find-list').contains(button)) return;
+  const asset = renderedRecentAssets[Number(button.dataset.recentIndex)];
+  if (asset) openAssetExport(asset, button);
+});
 $('#asset-export-close').addEventListener('click', () => closeAssetExport());
 $('#asset-export-cancel').addEventListener('click', () => closeAssetExport());
 $('#asset-export-dialog').addEventListener('cancel', event => { event.preventDefault(); closeAssetExport(); });
@@ -770,24 +802,11 @@ $('#address-form').addEventListener('submit', event => {
   event.preventDefault();
   const field = $('#wallet-address');
   const address = field.value.trim();
-  if (!classifyAddress(address)) return importStatus('Enter a valid Bitcoin, TRON or EVM public address.', true);
+  if (!classifyAddress(address)) return importStatus('Enter a valid Bitcoin or EVM public address.', true);
   const result = addAddresses([address]);
   viewMode = 'watch'; if (!watchInitialized) scan('incremental'); else render();
   field.value = '';
   importStatus(!result.saved ? 'Address tracked for this session, but browser storage is unavailable.' : result.restored ? 'This previously hidden address is now visible.' : result.duplicates ? 'This address is already being tracked.' : 'Address added. Scanning balances…', !result.saved);
-});
-$('#generate-phrase').addEventListener('click', () => {
-  try {
-    const phrase = window.generateWatchPhrase();
-    const field = $('#seed-phrases');
-    // Preserve any pasted phrases; each click appends one complete phrase.
-    const existing = field.value;
-    field.value = existing + (existing && !existing.endsWith('\n') ? '\n' : '') + phrase;
-    field.focus();
-    importStatus('Generated one 12-word phrase locally. Click Add pasted phrases to track its first EVM address. The input will be cleared; the phrase remains in this tab for export until you leave or reload.');
-  } catch (_) {
-    importStatus('Could not generate a phrase: secure randomness is unavailable. Try a trusted, up-to-date browser.', true);
-  }
 });
 $('#seed-form').addEventListener('submit', async event => {
   event.preventDefault();
@@ -916,6 +935,7 @@ $('#asset-prev').addEventListener('click', () => { if (viewMode === 'file') { fi
 $('#asset-next').addEventListener('click', () => { if (viewMode === 'file') { fileAssetPage++; syncFileView(); } else assetPage++; render(); });
 $('#refresh').addEventListener('click', () => { window.pricing?.refresh(); if (viewMode === 'file') fileScan?.refresh(); else scan(); });
 $('#retry-failed').addEventListener('click', () => { if (viewMode === 'file') fileScan?.retry(); else scan(true); });
+$('#stop-generation').addEventListener('click', () => fileScan?.stopGeneration());
 $('#file-refresh-bnb').addEventListener('click', () => fileScan?.refreshBnb());
 $('#file-remove').addEventListener('click', async () => { if (await fileScan?.remove()) { fileAssetPage = 0; fileWalletPage = 0; $('#network-filter').value = 'all'; viewMode = fileScan.snapshot().hasJob ? 'file' : 'watch'; if (viewMode === 'watch' && !watchInitialized) scan('incremental'); else render(); } });
 $('#today').textContent = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date());

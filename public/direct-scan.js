@@ -6,7 +6,7 @@
       const scan = typeof module !== 'undefined' && module.exports ? require('../lib/native-scanner').scanBnb : root.scanBnb;
       return scan(address, fetcher);
     }
-    if (['bitcoin', 'tron'].includes(network)) {
+    if (network === 'bitcoin') {
       const scan = typeof module !== 'undefined' && module.exports ? require('../lib/native-scanner').scanNativeNetwork : root.scanNativeNetwork;
       return scan(address, network, fetcher);
     }

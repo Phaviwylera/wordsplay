@@ -16,18 +16,6 @@ window.createScanQueue = createScanQueue;
 window.priceTools = { usdPrice, positive };
 window.scanEvmNativeFallback = scanEvmNativeFallback;
 
-// 128 cryptographically random bits plus the BIP-39 checksum produce 12 words.
-// Fail closed if the browser cannot provide secure randomness.
-window.generateWatchPhrase = function generateWatchPhrase() {
-  if (!window.crypto || typeof window.crypto.getRandomValues !== 'function') {
-    throw new Error('Secure randomness is unavailable');
-  }
-  const entropy = new Uint8Array(16);
-  window.crypto.getRandomValues(entropy);
-  try { return Mnemonic.fromEntropy(entropy).phrase; }
-  finally { entropy.fill(0); }
-};
-
 // Explicitly unlock a matching self-custody keystore for export. Decryption,
 // verification, and the returned phrase stay on the device; nothing is sent.
 window.unlockCustodyRecoveryPhrase = async function unlockCustodyRecoveryPhrase(json, password) {

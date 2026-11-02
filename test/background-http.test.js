@@ -147,3 +147,62 @@ test('lost browser access is restored only with an admin-issued, same-origin, on
     assert.equal(status.status, 200); assert.equal(status.body.id, previous.id);
   } finally { await stopChild(child); fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('EC2 generation requires loopback, a same-origin bounded empty request and job bearer credentials', { timeout: 20000 }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-http-generate-'));
+  const source = `require('./lib/market').getMarket=async()=>({currency:'INR',usdToInr:83,prices:{}});
+    require('./lib/scanner').scanWallet=async (_address,network)=>({assets:[{type:'native',symbol:'ETH',rawBalance:'0',decimals:18,price:null},...(network==='bnb'?[{type:'BEP-20',symbol:'BUSD',contract:'0xe9e7cea3dedca5984780bafc599bd69add087d56',rawBalance:'0',decimals:18,price:null}]:[])],...(network==='bnb'?{coverage:'bnb-and-busd'}:{})});
+    require('./server');`;
+  const child = spawn(process.execPath, ['-e', source], { env: { ...process.env, PORT: '0', WALLETO_BACKGROUND_DIR: dir }, stdio: ['ignore', 'pipe', 'pipe'] });
+  try {
+    const port = await childPort(child); const host = `127.0.0.1:${port}`;
+    const headers = { host, origin: `http://${host}`, 'content-type': 'application/json' };
+    const endpoint = '/api/background/jobs/generate';
+    assert.equal((await request(port, 'POST', endpoint, { ...headers, host: 'evil.example' }, '{}')).status, 403);
+    assert.equal((await request(port, 'POST', endpoint, { ...headers, origin: 'http://evil.example' }, '{}')).status, 403);
+    assert.equal((await request(port, 'POST', endpoint, { host, 'content-type': 'application/json' }, '{}')).status, 403);
+    assert.equal((await request(port, 'POST', endpoint, { ...headers, 'content-type': 'text/plain' }, '{}')).status, 403);
+    assert.equal((await request(port, 'POST', endpoint, headers, '{')).status, 400);
+    assert.equal((await request(port, 'POST', endpoint, headers, '[]')).status, 400);
+    assert.equal((await request(port, 'POST', endpoint, headers, '{"phrase":"not accepted"}')).status, 400);
+    assert.equal((await request(port, 'POST', endpoint, headers, JSON.stringify({ x: 'x'.repeat(1100) }))).status, 413);
+    const generated = await request(port, 'POST', endpoint, headers, '{}');
+    assert.equal(generated.status, 202); assert.equal(generated.body.kind, 'generated');
+    assert.deepEqual(Object.keys(generated.body).sort(), ['id', 'kind', 'token']);
+    const { id, token } = generated.body;
+    assert.equal((await request(port, 'GET', `/api/background/jobs/${id}`, { host })).status, 404);
+    assert.equal((await request(port, 'GET', `/api/background/jobs/${id}`, { host, authorization: `Bearer ${'0'.repeat(64)}` })).status, 404);
+    assert.equal((await request(port, 'POST', endpoint, headers, '{}')).status, 409, 'another automatic producer cannot start');
+    const stop = `/api/background/jobs/${id}/stop-generation`;
+    assert.equal((await request(port, 'POST', stop, { ...headers, origin: 'http://evil.example', authorization: `Bearer ${token}` })).status, 403);
+    assert.equal((await request(port, 'POST', stop, { ...headers, authorization: `Bearer ${'0'.repeat(64)}` })).status, 404);
+    let status;
+    for (let i = 0; i < 150; i++) {
+      status = (await request(port, 'GET', `/api/background/jobs/${id}`, { host, authorization: `Bearer ${token}` })).body;
+      if (status.wallets >= 10) break;
+      await new Promise(resolve => setTimeout(resolve, 30));
+    }
+    assert.equal(status.status, 'scanning'); assert.equal(status.generationActive, true); assert.ok(status.wallets >= 10);
+    assert.equal((await request(port, 'POST', stop, { ...headers, authorization: `Bearer ${token}` })).status, 202);
+    for (let i = 0; i < 150; i++) {
+      status = (await request(port, 'GET', `/api/background/jobs/${id}`, { host, authorization: `Bearer ${token}` })).body;
+      if (status.status === 'finished') break;
+      await new Promise(resolve => setTimeout(resolve, 30));
+    }
+    assert.equal(status.status, 'finished'); assert.equal(status.kind, 'generated');
+    assert.ok(status.wallets >= 10); assert.equal(status.hiddenWallets, status.wallets);
+    assert.equal(status.retainsPhrases, false);
+    const dashboard = await request(port, 'GET', `/api/background/jobs/${id}/dashboard`, { host, authorization: `Bearer ${token}` });
+    assert.equal(dashboard.status, 200); assert.equal(dashboard.body.assets.length, 0);
+    assert.equal(dashboard.body.recentAssets.length, 0);
+    for (let i = 0; i < 100 && !fs.existsSync(socketPath(dir)); i++) await new Promise(resolve => setTimeout(resolve, 20));
+    const issued = await controlRequest(socketPath(dir), { action: 'issue', id });
+    const recovered = await request(port, 'POST', '/api/background/reconnect', headers, JSON.stringify({ code: issued.code }));
+    assert.equal(recovered.status, 200); assert.equal(recovered.body.kind, 'generated');
+    assert.notEqual(recovered.body.token, token);
+    assert.equal((await request(port, 'GET', `/api/background/jobs/${id}`, { host, authorization: `Bearer ${token}` })).status, 404);
+    assert.equal((await request(port, 'GET', `/api/background/jobs/${id}`, { host, authorization: `Bearer ${recovered.body.token}` })).body.kind, 'generated');
+  } finally {
+    await stopChild(child); fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

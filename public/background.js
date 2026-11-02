@@ -5,20 +5,21 @@
   const $ = id => document.getElementById(id);
   const storageKey = 'walleto.background-jobs';
   const legacyStorageKey = 'walleto.background-job';
-  let jobs = []; let job = null; let timer = null; let requestVersion = 0; let uploading = false; let reconnecting = false;
+  let jobs = []; let job = null; let timer = null; let requestVersion = 0; let uploading = false; let reconnecting = false; let generating = false;
   let storageWarning = false; let refreshingBnb = false; let restoringHidden = false;
   const view = { assetOffset: 0, walletOffset: 0, network: 'all' };
   const state = { data: null, error: '', loading: false, uploadPercent: 0 };
   const validJob = item => item && typeof item.id === 'string' && /^[a-f0-9]{64}$/.test(item.id) && typeof item.token === 'string' && /^[a-f0-9]{64}$/.test(item.token);
+  const normalizeJob = item => ({ id: item.id, token: item.token, ...(item.kind === 'generated' ? { kind: 'generated' } : {}) });
   try {
     const saved = localStorage.getItem(storageKey);
     if (saved !== null) {
       const stored = JSON.parse(saved);
-      if (Array.isArray(stored)) jobs = stored.filter(validJob).map(item => ({ id: item.id, token: item.token }));
+      if (Array.isArray(stored)) jobs = stored.filter(validJob).map(normalizeJob);
     } else {
       const legacy = JSON.parse(localStorage.getItem(legacyStorageKey) || 'null');
       if (validJob(legacy)) {
-        jobs = [{ id: legacy.id, token: legacy.token }];
+        jobs = [normalizeJob(legacy)];
         localStorage.setItem(storageKey, JSON.stringify(jobs)); localStorage.removeItem(legacyStorageKey);
       }
     }
@@ -35,19 +36,19 @@
     if (raw !== null) {
       const value = JSON.parse(raw);
       if (!Array.isArray(value) || !value.every(validJob)) throw new Error('Invalid saved jobs');
-      result.push(...value.map(item => ({ id: item.id, token: item.token })));
+      result.push(...value.map(normalizeJob));
     }
     const legacy = localStorage.getItem(legacyStorageKey);
     if (legacy !== null) {
       const value = JSON.parse(legacy);
       if (value !== null && !validJob(value)) throw new Error('Invalid legacy job');
-      if (value) result.push({ id: value.id, token: value.token });
+      if (value) result.push(normalizeJob(value));
     }
     return result;
   }
   function mergedJobs(...lists) {
     const byId = new Map();
-    for (const item of lists.flat()) byId.set(item.id, { id: item.id, token: item.token });
+    for (const item of lists.flat()) byId.set(item.id, normalizeJob(item));
     return [...byId.values()];
   }
   const privateAccess = () => location.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(location.hostname);
@@ -57,7 +58,7 @@
     el.textContent = message; el.hidden = false; el.classList.toggle('error', error);
   }
   function snapshot() {
-    return { hasJob: Boolean(job), jobId: job?.id || null, jobs: jobs.map(item => ({ id: item.id })), uploading, storageWarning, ...state, view: { ...view } };
+    return { hasJob: Boolean(job), jobId: job?.id || null, jobs: jobs.map(item => ({ id: item.id, ...(item.kind === 'generated' ? { kind: 'generated' } : {}) })), uploading, generating, storageWarning, ...state, view: { ...view } };
   }
   async function request(suffix = '', method = 'GET') {
     if (!job || !privateAccess()) throw new Error('Reconnect to the EC2 app through the private SSH tunnel.');
@@ -73,7 +74,7 @@
     clearTimeout(timer);
     if (!job) { state.loading = false; notify(); return; }
     if (!privateAccess()) {
-      state.error = 'Reconnect to the EC2 app through the private SSH tunnel to see file results.';
+      state.error = 'Reconnect to the EC2 app through the private SSH tunnel to see server results.';
       state.loading = false; notify(); return;
     }
     const version = ++requestVersion; const current = job;
@@ -120,6 +121,17 @@
     state.data = null; state.error = ''; state.loading = false;
     Object.assign(view, { assetOffset: 0, walletOffset: 0, network: 'all' });
     refresh();
+  }
+  async function stopGeneration() {
+    if (!job || !state.data?.generationActive) return;
+    const current = job; const button = $('stop-generation'); button.disabled = true;
+    try {
+      await request('/stop-generation', 'POST');
+      if (current !== job) return;
+      importStatus('Automatic generation stopped. EC2 will finish the already queued scans.');
+      await refresh();
+    } catch (_) { importStatus('Could not stop generation. Reconnect the private EC2 tunnel and try again.', true); }
+    finally { button.disabled = false; }
   }
   async function retry() {
     if (!job || !state.data || state.data.status !== 'finished' || !state.data.incomplete) return;
@@ -176,7 +188,7 @@
     return result.phrase.trim().toLowerCase().replace(/\s+/g, ' ');
   }
   async function reconnectFileJob() {
-    if (uploading || reconnecting) return importStatus('Wait for the current upload or reconnection to finish.', true);
+    if (uploading || reconnecting || generating) return importStatus('Wait for the current upload, generation or reconnection to finish.', true);
     if (!privateAccess()) return importStatus('Reconnect through the private SSH tunnel to EC2.', true);
     const field = $('file-recovery-code'); const code = field.value.trim().toLowerCase();
     if (!/^[a-f0-9]{64}$/.test(code)) return importStatus('Enter the one-time code generated on EC2.', true);
@@ -185,14 +197,14 @@
       localStorage.setItem(`${storageKey}.test`, '1'); localStorage.removeItem(`${storageKey}.test`);
       before = readStoredJobs();
     } catch (_) { return importStatus('Browser storage is unavailable or its saved links are invalid. No recovery code was used.', true); }
-    if (!confirm('Reconnect this EC2 file job? This replaces older browser access links for that job. The scan and saved results are not deleted.')) return;
+    if (!confirm('Reconnect this EC2 server job? This replaces older browser access links for that job. The scan and saved results are not deleted.')) return;
     field.value = ''; reconnecting = true; $('file-reconnect').disabled = true;
     try {
       const response = await fetch('/api/background/reconnect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }), cache: 'no-store' });
       if (!response.ok) throw new Error('Recovery failed');
       const result = await response.json();
       if (!validJob(result)) throw new Error('Invalid recovery response');
-      const recovered = { id: result.id, token: result.token };
+      const recovered = normalizeJob(result);
       let stored = before; let canPersist = true;
       try { stored = readStoredJobs(); } catch (_) { canPersist = false; }
       jobs = mergedJobs(jobs, before, stored, [recovered]);
@@ -207,6 +219,38 @@
       importStatus('Could not reconnect. Check the private tunnel and generate a new code if the previous one expired or was used.', true);
     } finally { reconnecting = false; $('file-reconnect').disabled = false; }
   }
+  async function generatePhrase() {
+    if (uploading || reconnecting || generating) return importStatus('Wait for the current upload, generation or reconnection to finish.', true);
+    if (!privateAccess()) return importStatus('Phrase generation requires the private SSH tunnel to EC2. Nothing was generated or scanned.', true);
+    let before;
+    try {
+      localStorage.setItem(`${storageKey}.test`, '1'); localStorage.removeItem(`${storageKey}.test`);
+      before = readStoredJobs();
+    } catch (_) { return importStatus('Browser storage is unavailable or its saved links are invalid. No phrase was generated.', true); }
+    generating = true; $('generate-phrase').disabled = true;
+    importStatus('Starting automatic generation and scanning on EC2.'); notify();
+    try {
+      const response = await fetch('/api/background/jobs/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', cache: 'no-store' });
+      if (response.status === 409) return importStatus('An automatic generator is already running. Select its job, or reconnect it with an EC2 recovery code, to stop it.', true);
+      if (response.status !== 202) throw new Error('Generation not confirmed');
+      const result = await response.json();
+      if (!validJob(result) || result.kind !== 'generated') throw new Error('Invalid generation response');
+      const generated = normalizeJob(result);
+      let stored = before; let canPersist = true;
+      try { stored = readStoredJobs(); } catch (_) { canPersist = false; }
+      jobs = mergedJobs(jobs, before, stored, [generated]);
+      job = jobs.find(item => item.id === generated.id); requestVersion++; clearTimeout(timer);
+      state.data = null; state.error = ''; state.loading = false; state.uploadPercent = 0;
+      Object.assign(view, { assetOffset: 0, walletOffset: 0, network: 'all' });
+      if (canPersist) persistJobs(); else storageWarning = true;
+      const warning = storageWarning ? ' Browser storage failed; keep this page open or recover the server job later.' : '';
+      importStatus(`Automatic generation started. EC2 continues generating and scanning if this laptop is off.${warning}`, storageWarning);
+      window.dispatchEvent(new Event('file-scan:started')); notify(); await refresh();
+    } catch (_) {
+      importStatus('Generation status is unknown. EC2 may have started a job; check the server before retrying.', true);
+    } finally { generating = false; $('generate-phrase').disabled = false; notify(); }
+  }
+  $('generate-phrase').addEventListener('click', generatePhrase);
   $('file-reconnect').addEventListener('click', reconnectFileJob);
   $('file-recovery-code').addEventListener('keydown', event => {
     if (event.key === 'Enter') { event.preventDefault(); reconnectFileJob(); }
@@ -216,7 +260,7 @@
     // Do not display a file name: it might itself contain sensitive information.
     field.value = '';
     if (!file) return;
-    if (uploading || reconnecting) return importStatus('A file upload or reconnection is already in progress.', true);
+    if (uploading || reconnecting || generating) return importStatus('An upload, generation or reconnection is already in progress.', true);
     if (!/\.txt$/i.test(file.name)) return importStatus('Choose a UTF-8 .txt file.', true);
     if (!privateAccess()) return importStatus('File import requires the private SSH tunnel to EC2. The file was not processed or uploaded in this browser.', true);
     try { localStorage.setItem(`${storageKey}.test`, '1'); localStorage.removeItem(`${storageKey}.test`); }
@@ -257,9 +301,9 @@
     };
     try { xhr.send(file); } catch (_) { failed(); }
   });
-  window.addEventListener('beforeunload', event => { if (uploading) { event.preventDefault(); event.returnValue = ''; } });
+  window.addEventListener('beforeunload', event => { if (uploading || generating) { event.preventDefault(); event.returnValue = ''; } });
   window.addEventListener('pagehide', () => { $('file-recovery-code').value = ''; requestVersion++; clearTimeout(timer); });
   window.addEventListener('pageshow', event => { if (event.persisted && job) refresh(); });
-  window.fileScan = { snapshot, setView, select, refresh, restoreHidden, refreshBnb, retry, remove, phrase };
+  window.fileScan = { snapshot, setView, select, refresh, restoreHidden, refreshBnb, retry, stopGeneration, remove, phrase };
   if (job) refresh();
 })();
