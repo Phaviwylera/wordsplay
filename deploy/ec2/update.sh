@@ -27,11 +27,21 @@ worker_global=${WALLETO_SCAN_CONCURRENCY-12}
 worker_network=${WALLETO_SCAN_PER_NETWORK-3}
 worker_settings='disabled'
 worker_enabled=0
+trusted_host=''
+trusted_origin=${WALLETO_TRUSTED_ORIGIN-}
+if [[ -n "$trusted_origin" ]]; then
+  trusted_host=${trusted_origin#https://}
+  tailnet_host_re='^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.ts\.net$'
+  [[ "$trusted_origin" == "https://$trusted_host" && "$trusted_host" =~ $tailnet_host_re ]] || {
+    echo 'WALLETO_TRUSTED_ORIGIN must be an exact https://<device>.<tailnet>.ts.net origin without a path or port.' >&2; exit 1;
+  }
+fi
 if [[ -f "$STATE_DIR/background-enabled" ]]; then
   worker_enabled=1
   [[ "$worker_global" =~ ^([1-9]|[1-3][0-9]|40)$ ]] || { echo 'WALLETO_SCAN_CONCURRENCY must be an integer from 1 to 40.' >&2; exit 1; }
   [[ "$worker_network" =~ ^[1-8]$ ]] || { echo 'WALLETO_SCAN_PER_NETWORK must be an integer from 1 to 8.' >&2; exit 1; }
   worker_settings="enabled:$worker_global:$worker_network"
+  [[ -z "$trusted_host" ]] || worker_settings+=":$trusted_host"
 fi
 # Preserve the last successful configuration for rollback. Never trust the
 # settings file as shell code, and never re-enable a worker if its opt-in flag
@@ -39,7 +49,7 @@ fi
 previous_settings=$worker_settings
 if [[ -f "$STATE_DIR/deployed-worker-settings" ]]; then
   saved_settings=$(cat "$STATE_DIR/deployed-worker-settings")
-  if [[ "$saved_settings" == 'disabled' || "$saved_settings" =~ ^enabled:([1-9]|[1-3][0-9]|40):[1-8]$ ]]; then
+  if [[ "$saved_settings" == 'disabled' || "$saved_settings" =~ ^enabled:([1-9]|[1-3][0-9]|40):[1-8](:[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.ts\.net)?$ ]]; then
     previous_settings=$saved_settings
   fi
 fi
@@ -57,17 +67,18 @@ wait_healthy() {
   return 1
 }
 start_app() {
-  local image_to_start=$1 settings=$2 mode global network
+  local image_to_start=$1 settings=$2 mode global network trusted_host
   local -a background_args=()
-  IFS=: read -r mode global network <<< "$settings"
-  # Opt in only after the operator has removed public proxy access and is using
-  # an SSH tunnel. Host/Origin checks alone are not a network security boundary.
+  IFS=: read -r mode global network trusted_host <<< "$settings"
+  # Opt in only after public access is closed and the operator uses SSH or a
+  # private Tailscale Serve proxy. Host/Origin checks alone are not auth.
   if [[ "$mode" == 'enabled' ]]; then
     mkdir -p "$STATE_DIR/background-jobs"
     chown 1000:1000 "$STATE_DIR/background-jobs"
     chmod 700 "$STATE_DIR/background-jobs"
     background_args=(-e WALLETO_BACKGROUND_DIR=/var/lib/walleto-jobs -v "$STATE_DIR/background-jobs:/var/lib/walleto-jobs"
       -e "WALLETO_SCAN_CONCURRENCY=$global" -e "WALLETO_SCAN_PER_NETWORK=$network")
+    [[ -z "$trusted_host" ]] || background_args+=(-e "WALLETO_TRUSTED_ORIGIN=https://$trusted_host")
   fi
   docker run -d --name "$APP_NAME" --restart unless-stopped -p 127.0.0.1:3000:3000 "${background_args[@]}" "$image_to_start" >/dev/null || return 1
   wait_healthy "$APP_NAME"

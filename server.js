@@ -6,9 +6,19 @@ const marketHandler = require('./api/market');
 const market = require('./lib/market');
 const { MAX_ADDRESS_CSV_BYTES } = require('./lib/address-csv');
 const publicDir = path.join(__dirname, 'public');
-// Enable only on a loopback-published EC2 container accessed by SSH tunnel.
-// The persistent directory must be private to the service account.
+// Enable only on a loopback-published EC2 container accessed by SSH tunnel or
+// a private Tailscale Serve proxy. The persistent directory must stay private.
 const workerLimits = process.env.WALLETO_BACKGROUND_DIR ? require('./lib/worker-config').readWorkerLimits(process.env) : null;
+const trustedOrigin = process.env.WALLETO_TRUSTED_ORIGIN || null;
+let trustedHost = null;
+if (trustedOrigin) {
+  let parsedOrigin;
+  try { parsedOrigin = new URL(trustedOrigin); } catch (_) { throw new Error('WALLETO_TRUSTED_ORIGIN must be a valid HTTPS Tailscale URL.'); }
+  if (parsedOrigin.protocol !== 'https:' || parsedOrigin.origin !== trustedOrigin || !parsedOrigin.hostname.endsWith('.ts.net') || parsedOrigin.port) {
+    throw new Error('WALLETO_TRUSTED_ORIGIN must be an exact https://<device>.<tailnet>.ts.net origin without a path or port.');
+  }
+  trustedHost = parsedOrigin.host.toLowerCase();
+}
 const jobs = workerLimits ? require('./lib/background-jobs').createBackgroundJobs(process.env.WALLETO_BACKGROUND_DIR, workerLimits) : null;
 const recovery = jobs ? require('./lib/file-job-recovery').createFileJobRecovery(jobs) : null;
 if (workerLimits) {
@@ -33,10 +43,20 @@ async function dashboardMarket() {
 }
 function privateBackgroundRequest(req) {
   const host = req.headers.host || '';
-  if (!/^(?:localhost|127\.0\.0\.1)(?::\d+)?$/i.test(host)) return false;
+  const localHost = /^(?:localhost|127\.0\.0\.1)(?::\d+)?$/i.test(host);
+  const trustedTailnetHost = Boolean(trustedHost && host.toLowerCase() === trustedHost);
+  if (!localHost && !trustedTailnetHost) return false;
   const origin = req.headers.origin;
-  if (origin && origin !== `http://${host}`) return false;
+  if (origin && origin !== `http://${host}` && !(trustedOrigin && origin === trustedOrigin && (localHost || trustedTailnetHost))) return false;
   return true;
+}
+function privateBackgroundSameOrigin(req) {
+  const host = req.headers.host || '';
+  const localHost = /^(?:localhost|127\.0\.0\.1)(?::\d+)?$/i.test(host);
+  const trustedTailnetHost = Boolean(trustedHost && host.toLowerCase() === trustedHost);
+  const origin = req.headers.origin;
+  return (localHost && origin === `http://${host}`)
+    || Boolean(trustedOrigin && origin === trustedOrigin && (localHost || trustedTailnetHost));
 }
 function readSmallBody(req, limit = 1024) {
   return new Promise((resolve, reject) => {
@@ -59,9 +79,9 @@ const server = http.createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     const send = (code, body) => { res.statusCode = code; res.end(JSON.stringify(body)); };
     try {
-    if (!jobs || !privateBackgroundRequest(req)) return send(403, { error: 'File import requires a private SSH tunnel and EC2 worker configuration.' });
+    if (!jobs || !privateBackgroundRequest(req)) return send(403, { error: 'Private EC2 access requires a configured SSH tunnel or Tailscale Serve origin and the EC2 worker.' });
     if (req.method === 'POST' && url.pathname === '/api/background/reconnect') {
-      if (req.headers.origin !== `http://${req.headers.host}` || req.headers['content-type'] !== 'application/json') return send(403, { error: 'Invalid recovery origin.' });
+      if (!privateBackgroundSameOrigin(req) || req.headers['content-type'] !== 'application/json') return send(403, { error: 'Invalid recovery origin.' });
       if (Number(req.headers['content-length']) > 1024) { req.resume(); return send(413, { error: 'Recovery request too large.' }); }
       const raw = await readSmallBody(req);
       if (raw === null) return send(413, { error: 'Recovery request too large.' });
@@ -73,7 +93,7 @@ const server = http.createServer(async (req, res) => {
       return send(200, ['generated', 'addresses'].includes(status?.kind) ? { ...link, kind: status.kind } : link);
     }
     if (req.method === 'POST' && url.pathname === '/api/background/jobs/generate') {
-      if (req.headers.origin !== `http://${req.headers.host}` || req.headers['content-type'] !== 'application/json') return send(403, { error: 'Invalid generation origin.' });
+      if (!privateBackgroundSameOrigin(req) || req.headers['content-type'] !== 'application/json') return send(403, { error: 'Invalid generation origin.' });
       if (Number(req.headers['content-length']) > 1024) { req.resume(); return send(413, { error: 'Generation request too large.' }); }
       const raw = await readSmallBody(req);
       if (raw === null) return send(413, { error: 'Generation request too large.' });
@@ -84,7 +104,7 @@ const server = http.createServer(async (req, res) => {
       return generated ? send(202, generated) : send(409, { error: 'An automatic generator is already running.' });
     }
     if (req.method === 'POST' && url.pathname === '/api/background/jobs/addresses') {
-      if (req.headers.origin !== `http://${req.headers.host}` || req.headers['content-type'] !== 'application/octet-stream') return send(403, { error: 'Invalid upload origin.' });
+      if (!privateBackgroundSameOrigin(req) || req.headers['content-type'] !== 'application/octet-stream') return send(403, { error: 'Invalid upload origin.' });
       if (Number(req.headers['content-length']) > MAX_ADDRESS_CSV_BYTES) { res.setHeader('Connection', 'close'); req.resume(); return send(413, { error: 'CSV exceeds the 256 MiB upload limit.' }); }
       try { return send(202, await jobs.receive(req, { kind: 'addresses' })); }
       catch (error) {
@@ -94,7 +114,7 @@ const server = http.createServer(async (req, res) => {
     }
     const match = url.pathname.match(/^\/api\/background\/jobs\/([a-f0-9]{64})(?:\/(results|dashboard|matches|phrase|retry|refresh-bnb|restore-hidden|stop-generation|resume-generation))?$/);
     if (req.method === 'POST' && url.pathname === '/api/background/jobs') {
-      if (req.headers.origin !== `http://${req.headers.host}` || req.headers['content-type'] !== 'application/octet-stream') return send(403, { error: 'Invalid upload origin.' });
+      if (!privateBackgroundSameOrigin(req) || req.headers['content-type'] !== 'application/octet-stream') return send(403, { error: 'Invalid upload origin.' });
       try { const result = await jobs.receive(req, { retainPhrases: true }); return send(202, result); }
       catch (_) { if (!res.destroyed) return send(500, { error: 'Upload did not complete. Try again while connected.' }); return; }
     }
@@ -116,22 +136,22 @@ const server = http.createServer(async (req, res) => {
       const phrase = jobs.phrase(id, token, url.searchParams.get('address'));
       return phrase ? send(200, { phrase }) : send(404, { error: 'No retained phrase for a positive-balance wallet.' });
     }
-    if (req.method === 'POST' && action === 'stop-generation' && req.headers.origin === `http://${req.headers.host}`) {
+    if (req.method === 'POST' && action === 'stop-generation' && privateBackgroundSameOrigin(req)) {
       return jobs.stopGeneration(id, token) ? send(202, { ok: true }) : send(409, { error: 'Automatic generation is not running.' });
     }
-    if (req.method === 'POST' && action === 'resume-generation' && req.headers.origin === `http://${req.headers.host}`) {
+    if (req.method === 'POST' && action === 'resume-generation' && privateBackgroundSameOrigin(req)) {
       return jobs.resumeGeneration(id, token) ? send(202, { ok: true }) : send(409, { error: 'This generated job cannot be resumed yet. It must be finished, retain its phrase data safely, and no other generator may be active.' });
     }
-    if (req.method === 'POST' && action === 'retry' && req.headers.origin === `http://${req.headers.host}`) {
+    if (req.method === 'POST' && action === 'retry' && privateBackgroundSameOrigin(req)) {
       return jobs.retry(id, token) ? send(202, { ok: true }) : send(409, { error: 'Job cannot be retried yet.' });
     }
-    if (req.method === 'POST' && action === 'refresh-bnb' && req.headers.origin === `http://${req.headers.host}`) {
+    if (req.method === 'POST' && action === 'refresh-bnb' && privateBackgroundSameOrigin(req)) {
       return jobs.refreshBnb(id, token) ? send(202, { ok: true }) : send(409, { error: 'BNB checks cannot be refreshed yet.' });
     }
-    if (req.method === 'POST' && action === 'restore-hidden' && req.headers.origin === `http://${req.headers.host}`) {
+    if (req.method === 'POST' && action === 'restore-hidden' && privateBackgroundSameOrigin(req)) {
       return send(200, { restored: jobs.restoreHidden(id, token) });
     }
-    if (req.method === 'DELETE' && !action && req.headers.origin === `http://${req.headers.host}`) {
+    if (req.method === 'DELETE' && !action && privateBackgroundSameOrigin(req)) {
       return jobs.remove(id, token) ? send(200, { ok: true }) : send(409, { error: 'Only finished jobs can be removed.' });
     }
     return send(405, { error: 'Method not allowed.' });

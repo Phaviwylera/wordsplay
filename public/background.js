@@ -51,7 +51,8 @@
     for (const item of lists.flat()) byId.set(item.id, normalizeJob(item));
     return [...byId.values()];
   }
-  const privateAccess = () => location.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(location.hostname);
+  const privateAccess = () => (location.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(location.hostname))
+    || (location.protocol === 'https:' && location.hostname.endsWith('.ts.net') && !location.port);
   function notify() { window.dispatchEvent(new Event('file-scan:update')); }
   function importStatus(message, error = false) {
     const el = $('import-status');
@@ -61,7 +62,7 @@
     return { hasJob: Boolean(job), jobId: job?.id || null, jobs: jobs.map(item => ({ id: item.id, ...(['generated', 'addresses'].includes(item.kind) ? { kind: item.kind } : {}) })), uploading, generating, storageWarning, ...state, view: { ...view } };
   }
   async function request(suffix = '', method = 'GET') {
-    if (!job || !privateAccess()) throw new Error('Reconnect to the EC2 app through the private SSH tunnel.');
+    if (!job || !privateAccess()) throw new Error('Reconnect through the private SSH tunnel or authenticated Tailscale URL to EC2.');
     const controller = new AbortController(); const deadline = setTimeout(() => controller.abort(), 30000);
     try {
       const response = await fetch(`/api/background/jobs/${job.id}${suffix}`, { method, headers: { Authorization: `Bearer ${job.token}` }, signal: controller.signal });
@@ -74,7 +75,7 @@
     clearTimeout(timer);
     if (!job) { state.loading = false; notify(); return; }
     if (!privateAccess()) {
-      state.error = 'Reconnect to the EC2 app through the private SSH tunnel to see server results.';
+      state.error = 'Open the private EC2 dashboard through the private SSH tunnel or authenticated Tailscale URL to see server results.';
       state.loading = false; notify(); return;
     }
     const version = ++requestVersion; const current = job;
@@ -200,7 +201,7 @@
   }
   async function reconnectFileJob() {
     if (uploading || reconnecting || generating) return importStatus('Wait for the current upload, generation or reconnection to finish.', true);
-    if (!privateAccess()) return importStatus('Reconnect through the private SSH tunnel to EC2.', true);
+    if (!privateAccess()) return importStatus('Open the private EC2 dashboard through the private SSH tunnel or authenticated Tailscale URL.', true);
     const field = $('file-recovery-code'); const code = field.value.trim().toLowerCase();
     if (!/^[a-f0-9]{64}$/.test(code)) return importStatus('Enter the one-time code generated on EC2.', true);
     let before;
@@ -232,7 +233,7 @@
   }
   async function generatePhrase() {
     if (uploading || reconnecting || generating) return importStatus('Wait for the current upload, generation or reconnection to finish.', true);
-    if (!privateAccess()) return importStatus('Phrase generation requires the private SSH tunnel to EC2. Nothing was generated or scanned.', true);
+    if (!privateAccess()) return importStatus('Phrase generation requires the private SSH tunnel or authenticated Tailscale URL to EC2. Nothing was generated or scanned.', true);
     let before;
     try {
       localStorage.setItem(`${storageKey}.test`, '1'); localStorage.removeItem(`${storageKey}.test`);
@@ -309,12 +310,12 @@
     const addresses = kind === 'addresses';
     if (addresses ? !/\.csv$/i.test(file.name) : !/\.txt$/i.test(file.name)) return importStatus(addresses ? 'Choose a UTF-8 .csv file.' : 'Choose a UTF-8 .txt file.', true);
     if (addresses && file.size > 256 * 1024 * 1024) return importStatus('CSV exceeds the 256 MiB upload limit.', true);
-    if (!privateAccess()) return importStatus('File import requires the private SSH tunnel to EC2. The file was not processed or uploaded in this browser.', true);
+    if (!privateAccess()) return importStatus('File import requires the private SSH tunnel or authenticated Tailscale URL to EC2. The file was not processed or uploaded in this browser.', true);
     try { localStorage.setItem(`${storageKey}.test`, '1'); localStorage.removeItem(`${storageKey}.test`); }
     catch (_) { return importStatus('Browser storage is unavailable; the server job could not be safely linked for reconnection.', true); }
     const confirmation = addresses
-      ? 'Upload this public-address CSV to EC2? The entire file is sent to the server and temporarily stored encrypted, with its key on the same EC2 volume. Include public addresses only: remove any recovery phrases or private keys first. Keep this laptop on until the upload is confirmed. Continue only through a private SSH tunnel?'
-      : 'Upload this .txt file containing recovery phrases to EC2? The server processes it and temporarily stores encrypted copies of valid phrases; the encryption key is on the same EC2 volume. Server administrators, a compromise, snapshots or backups may expose them, and deletion is not guaranteed secure erasure. Do not use phrases protecting valuable funds. Keep this laptop on until the upload is confirmed. Continue only through a private SSH tunnel?';
+      ? 'Upload this public-address CSV to EC2? The entire file is sent to the server and temporarily stored encrypted, with its key on the same EC2 volume. Include public addresses only: remove any recovery phrases or private keys first. Keep this laptop on until the upload is confirmed. Continue only through a private SSH or authenticated Tailscale connection?'
+      : 'Upload this .txt file containing recovery phrases to EC2? The server processes it and temporarily stores encrypted copies of valid phrases; the encryption key is on the same EC2 volume. Server administrators, a compromise, snapshots or backups may expose them, and deletion is not guaranteed secure erasure. Do not use phrases protecting valuable funds. Keep this laptop on until the upload is confirmed. Continue only through a private SSH or authenticated Tailscale connection?';
     if (!confirm(confirmation)) return importStatus('Upload cancelled; no file was sent.');
     uploadFile(file, kind);
   }
