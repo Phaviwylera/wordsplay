@@ -48,11 +48,11 @@ let walletPage = 0;
 let assetPage = 0;
 let fileAssetPage = 0;
 let fileWalletPage = 0;
-let viewMode = fileScan?.snapshot().hasJob ? 'file' : 'watch';
+let viewMode = fileScan?.snapshot().hasJob || fileScan?.snapshot().pendingUpload ? 'file' : 'watch';
 let watchInitialized = false;
 const PAGE_SIZE = 100;
-const SCAN_CONCURRENCY = 20;
-const SCANS_PER_NETWORK = 4;
+const SCAN_CONCURRENCY = 30;
+const SCANS_PER_NETWORK = 6;
 // Reuse one limiter across refreshes: aborted requests that are still winding
 // down cannot briefly multiply the provider load when the watch list changes.
 const watchQueue = window.createScanQueue({ concurrency: SCAN_CONCURRENCY, perNetwork: SCANS_PER_NETWORK });
@@ -265,6 +265,9 @@ function renderFile() {
   const error = state.error || (data?.status === 'failed' ? (data.error || 'Server processing failed.') : '') || (state.storageWarning ? 'Browser storage failed. Keep this page open or access to this job may be lost.' : '');
   $('#scan-errors').hidden = !error; $('#scan-errors').textContent = error;
   $('#scan-status').hidden = !error; $('#scan-status').textContent = error;
+  $('#check-upload').hidden = !state.pendingUpload;
+  $('#check-upload').disabled = Boolean(state.checkingUpload);
+  $('#check-upload').textContent = state.checkingUpload ? 'Checking EC2…' : state.pendingUpload?.checkedNotFound ? 'Check EC2 again' : 'Check EC2 upload status';
   $('#retry-failed').hidden = !(data?.status === 'finished' && data.incomplete > 0); $('#retry-failed').disabled = false; $('#retry-failed').textContent = 'Retry incomplete checks';
   $('#stop-generation').hidden = !(data?.kind === 'generated' && data.generationActive);
   $('#resume-generation').hidden = !(data?.kind === 'generated' && data.status === 'finished' && !data.generationActive);
@@ -272,6 +275,12 @@ function renderFile() {
   $('#file-remove').hidden = !data || !['finished', 'failed'].includes(data.status);
 }
 let sourceOptionsKey = '';
+let jobCardPage = 0;
+const JOB_CARD_PAGE_SIZE = 20;
+function scanJobLabel(item, index) {
+  const kind = item.kind === 'generated' ? 'Automatic scan' : item.kind === 'addresses' ? 'Address scan' : 'Phrase scan';
+  return `${kind} ${index + 1}`;
+}
 function renderPortfolioSource() {
   const state = fileScan?.snapshot() || { jobs: [], jobId: null, uploading: false };
   const select = $('#portfolio-source');
@@ -291,6 +300,30 @@ function renderPortfolioSource() {
     sourceOptionsKey = key;
   }
   select.value = viewMode === 'watch' ? 'watch' : state.jobId ? `file:${state.jobId}` : 'file:new';
+  $('#portfolio-watch').setAttribute('aria-pressed', String(viewMode === 'watch'));
+  $('#portfolio-scans').setAttribute('aria-pressed', String(viewMode === 'file'));
+  const panel = $('#scan-jobs'); const jobs = state.jobs;
+  panel.hidden = jobs.length === 0;
+  const pageCount = Math.max(1, Math.ceil(jobs.length / JOB_CARD_PAGE_SIZE));
+  jobCardPage = Math.max(0, Math.min(jobCardPage, pageCount - 1));
+  const end = Math.max(0, jobs.length - jobCardPage * JOB_CARD_PAGE_SIZE);
+  const start = Math.max(0, end - JOB_CARD_PAGE_SIZE);
+  const labels = jobs.map((item, index) => scanJobLabel(item, jobs.slice(0, index).filter(prev => prev.kind === item.kind).length));
+  const recent = jobs.slice(start, end).map((item, pageIndex) => ({ item, label: labels[start + pageIndex] })).reverse();
+  $('#scan-jobs-count').textContent = `${jobs.length.toLocaleString()} scan${jobs.length === 1 ? '' : 's'}`;
+  $('#scan-job-grid').innerHTML = recent.map(({ item, label }) => {
+    const status = item.status || 'connecting';
+    const active = ['importing', 'scanning'].includes(status);
+    const statusText = status === 'scanning' ? 'Scanning' : status === 'importing' ? 'Processing' : status === 'failed' ? 'Failed' : status === 'finished' && item.incomplete ? 'Partial' : status === 'finished' ? 'Complete' : 'Connecting';
+    const percent = item.total > 0 ? Math.max(0, Math.min(100, Math.round(item.completed * 100 / item.total))) : status === 'finished' ? 100 : 0;
+    const checks = item.total > 0 ? `${(item.completed || 0).toLocaleString()}/${item.total.toLocaleString()} checks` : status === 'importing' ? 'Preparing addresses' : 'Waiting for EC2';
+    const meta = `${(item.wallets || 0).toLocaleString()} wallets · ${checks}${item.incomplete ? ` · ${item.incomplete.toLocaleString()} incomplete` : ''}`;
+    return `<button type="button" class="scan-job-card" data-scan-job-id="${escapeHtml(item.id)}" aria-current="${String(item.id === state.jobId && viewMode === 'file')}" aria-label="Open ${escapeHtml(label)} — ${escapeHtml(statusText)}, ${escapeHtml(meta)}"><span class="scan-job-card-top"><span class="scan-job-card-title">${escapeHtml(label)}</span><span class="scan-job-status ${active ? 'running' : status === 'failed' ? 'failed' : status === 'finished' && item.incomplete ? 'partial' : status === 'finished' ? 'finished' : ''}">${escapeHtml(statusText)}</span></span><span class="scan-job-card-meta">${escapeHtml(meta)}</span><progress class="scan-job-progress" value="${percent}" max="100" aria-label="${percent}% complete"></progress></button>`;
+  }).join('');
+  $('#scan-job-pager').hidden = pageCount <= 1;
+  $('#scan-job-page-label').textContent = `${start + 1}–${end} of ${jobs.length}`;
+  $('#scan-job-newer').disabled = jobCardPage === 0;
+  $('#scan-job-older').disabled = jobCardPage >= pageCount - 1;
 }
 function render() {
   renderPortfolioSource();
@@ -901,6 +934,29 @@ $('#restore-hidden').addEventListener('click', () => {
   walletPage = 0;
   const saved = persist(); render();
   importStatus(saved ? `Restored ${hidden.length} hidden wallet${hidden.length === 1 ? '' : 's'} to the watch list.` : 'Wallets restored for this session, but browser storage could not save the change.', !saved);
+});
+$('#portfolio-watch').addEventListener('click', () => {
+  viewMode = 'watch';
+  if (!watchInitialized) scan('incremental'); else render();
+});
+$('#portfolio-scans').addEventListener('click', () => {
+  viewMode = 'file'; fileAssetPage = 0; fileWalletPage = 0; $('#network-filter').value = 'all';
+  const latest = fileScan?.snapshot().jobs.at(-1);
+  if (latest) fileScan.select(latest.id);
+  else render();
+});
+$('#scan-job-grid').addEventListener('click', event => {
+  const card = event.target.closest('[data-scan-job-id]');
+  if (!card) return;
+  viewMode = 'file'; fileAssetPage = 0; fileWalletPage = 0; $('#network-filter').value = 'all';
+  fileScan?.select(card.dataset.scanJobId); render();
+});
+$('#scan-job-newer').addEventListener('click', () => {
+  if (jobCardPage > 0) { jobCardPage--; render(); const jobs = fileScan.snapshot().jobs; const end = jobs.length - jobCardPage * JOB_CARD_PAGE_SIZE; fileScan?.refreshJobSummaries(jobs.slice(Math.max(0, end - JOB_CARD_PAGE_SIZE), end).map(item => item.id), true); }
+});
+$('#scan-job-older').addEventListener('click', () => {
+  const pageCount = Math.ceil((fileScan?.snapshot().jobs.length || 0) / JOB_CARD_PAGE_SIZE);
+  if (jobCardPage < pageCount - 1) { jobCardPage++; render(); const jobs = fileScan.snapshot().jobs; const end = jobs.length - jobCardPage * JOB_CARD_PAGE_SIZE; fileScan?.refreshJobSummaries(jobs.slice(Math.max(0, end - JOB_CARD_PAGE_SIZE), end).map(item => item.id), true); }
 });
 $('#portfolio-source').addEventListener('change', event => {
   const selected = event.target.value;

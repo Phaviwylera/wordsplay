@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { Readable } = require('node:stream');
+const { Readable, PassThrough } = require('node:stream');
 const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
@@ -52,6 +52,29 @@ test('background jobs process a file, authenticate access and retain results', a
     for (const file of fs.readdirSync(dir)) assert.equal(fs.readFileSync(path.join(dir, file)).includes(Buffer.from(phrase)), false);
     assert.equal(jobs.remove(id, token), true);
     assert.equal(jobs.status(id, token), null);
+  } finally { jobs.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('upload request IDs reveal receiving state and make duplicate transfers idempotent', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-upload-id-'));
+  const jobs = createBackgroundJobs(dir, { scan: fakeScan });
+  const requestId = 'c'.repeat(64);
+  try {
+    const stream = new PassThrough();
+    const acceptedPromise = jobs.receive(stream, { requestId });
+    await wait();
+    assert.deepEqual(jobs.uploadStatus(requestId), { found: true, pending: true, status: 'receiving' });
+    stream.end(`${phrase}\n`);
+    const accepted = await acceptedPromise;
+    assert.equal(accepted.token, requestId);
+    assert.equal(jobs.authorized(accepted.id, requestId), true);
+    const duplicate = await jobs.receive(Readable.from('different body'), { requestId });
+    assert.equal(duplicate.id, accepted.id);
+    assert.equal(duplicate.token, requestId);
+    assert.equal(jobs.uploadStatus(requestId).id, accepted.id);
+    assert.equal(jobs.uploadStatus('d'.repeat(64)).found, false);
+    await assert.rejects(jobs.receive(Readable.from('ignored'), { kind: 'addresses', requestId }), error => error.code === 'UPLOAD_ID_CONFLICT');
+    await finished(jobs, accepted.id, requestId);
   } finally { jobs.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -480,11 +503,11 @@ test('five-wallet EC2 job progresses on healthy networks while a provider is slo
     let status;
     for (let i = 0; i < 200; i++) { status = jobs.status(id, token); if (status.completed === 20) break; await wait(); }
     assert.equal(status.status, 'scanning'); assert.equal(status.completed, 20);
-    assert.equal(held.length, 4);
+    assert.equal(held.length, 5);
     let page = jobs.dashboard(id, token);
     assert.equal(page.assetCount, 20); assert.equal(page.knownValue, 40);
-    assert.ok(peak <= 24, `global peak ${peak}`);
-    assert.ok(Object.values(peaks).every(value => value <= 4), JSON.stringify(peaks));
+    assert.ok(peak <= 32, `global peak ${peak}`);
+    assert.ok(Object.values(peaks).every(value => value <= 6), JSON.stringify(peaks));
     hold = false; held.forEach(resolve => resolve());
     assert.equal((await finished(jobs, id, token)).completed, 25);
     page = jobs.dashboard(id, token);

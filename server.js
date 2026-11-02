@@ -81,6 +81,16 @@ const server = http.createServer(async (req, res) => {
     const send = (code, body) => { res.statusCode = code; res.end(JSON.stringify(body)); };
     try {
     if (!jobs || !privateBackgroundRequest(req)) return send(403, { error: 'Private EC2 access requires a configured SSH tunnel or Tailscale Serve origin and the EC2 worker.' });
+    if (req.method === 'POST' && url.pathname === '/api/background/uploads/check') {
+      if (!privateBackgroundSameOrigin(req) || req.headers['content-type'] !== 'application/json') return send(403, { error: 'Invalid upload-status request origin.' });
+      if (Number(req.headers['content-length']) > 1024) { req.resume(); return send(413, { error: 'Upload-status request too large.' }); }
+      const raw = await readSmallBody(req);
+      if (raw === null) return send(413, { error: 'Upload-status request too large.' });
+      let input;
+      try { input = JSON.parse(raw); } catch (_) { return send(400, { error: 'Invalid upload-status request.' }); }
+      const status = jobs.uploadStatus(input?.requestId);
+      return status ? send(200, status) : send(400, { error: 'Invalid upload request ID.' });
+    }
     if (req.method === 'POST' && url.pathname === '/api/background/reconnect') {
       if (!privateBackgroundSameOrigin(req) || req.headers['content-type'] !== 'application/json') return send(403, { error: 'Invalid recovery origin.' });
       if (Number(req.headers['content-length']) > 1024) { req.resume(); return send(413, { error: 'Recovery request too large.' }); }
@@ -107,26 +117,32 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/api/background/jobs/addresses') {
       if (!privateBackgroundSameOrigin(req) || req.headers['content-type'] !== 'application/octet-stream') return send(403, { error: 'Invalid upload origin.' });
       if (Number(req.headers['content-length']) > MAX_ADDRESS_CSV_BYTES) { res.setHeader('Connection', 'close'); req.resume(); return send(413, { error: 'CSV exceeds the 256 MiB upload limit.' }); }
-      try { return send(202, await jobs.receive(req, { kind: 'addresses' })); }
+      const requestId = req.headers['x-walleto-upload-id'];
+      if (requestId !== undefined && (typeof requestId !== 'string' || !/^[a-f0-9]{64}$/.test(requestId))) { req.resume(); return send(400, { error: 'Invalid upload request ID.' }); }
+      try { return send(202, await jobs.receive(req, { kind: 'addresses', requestId })); }
       catch (error) {
-        if (!res.destroyed) return send(error?.code === 'TOO_LARGE' ? 413 : 500, { error: error?.code === 'TOO_LARGE' ? 'CSV exceeds the 256 MiB upload limit.' : 'Upload did not complete. Try again while connected.' });
+        if (!res.destroyed) return send(error?.code === 'TOO_LARGE' ? 413 : error?.code === 'UPLOAD_ID_CONFLICT' ? 409 : 500, { error: error?.code === 'TOO_LARGE' ? 'CSV exceeds the 256 MiB upload limit.' : error?.code === 'UPLOAD_ID_CONFLICT' ? error.message : 'Upload did not complete. Check its status before retrying.' });
         return;
       }
     }
     if (req.method === 'POST' && url.pathname === '/api/background/jobs/address-keys') {
       if (!privateBackgroundSameOrigin(req) || req.headers['content-type'] !== 'application/octet-stream') return send(403, { error: 'Invalid upload origin.' });
       if (Number(req.headers['content-length']) > MAX_ADDRESS_KEY_FILE_BYTES) { res.setHeader('Connection', 'close'); req.resume(); return send(413, { error: 'Address/private-key file exceeds the 256 MiB upload limit.' }); }
-      try { return send(202, await jobs.receive(req, { kind: 'address-keys' })); }
+      const requestId = req.headers['x-walleto-upload-id'];
+      if (requestId !== undefined && (typeof requestId !== 'string' || !/^[a-f0-9]{64}$/.test(requestId))) { req.resume(); return send(400, { error: 'Invalid upload request ID.' }); }
+      try { return send(202, await jobs.receive(req, { kind: 'address-keys', requestId })); }
       catch (error) {
-        if (!res.destroyed) return send(error?.code === 'TOO_LARGE' ? 413 : 500, { error: error?.code === 'TOO_LARGE' ? 'Address/private-key file exceeds the 256 MiB upload limit.' : 'Upload did not complete. Try again while connected.' });
+        if (!res.destroyed) return send(error?.code === 'TOO_LARGE' ? 413 : error?.code === 'UPLOAD_ID_CONFLICT' ? 409 : 500, { error: error?.code === 'TOO_LARGE' ? 'Address/private-key file exceeds the 256 MiB upload limit.' : error?.code === 'UPLOAD_ID_CONFLICT' ? error.message : 'Upload did not complete. Check its status before retrying.' });
         return;
       }
     }
     const match = url.pathname.match(/^\/api\/background\/jobs\/([a-f0-9]{64})(?:\/(results|dashboard|matches|phrase|retry|refresh-bnb|restore-hidden|stop-generation|resume-generation))?$/);
     if (req.method === 'POST' && url.pathname === '/api/background/jobs') {
       if (!privateBackgroundSameOrigin(req) || req.headers['content-type'] !== 'application/octet-stream') return send(403, { error: 'Invalid upload origin.' });
-      try { const result = await jobs.receive(req, { retainPhrases: true }); return send(202, result); }
-      catch (_) { if (!res.destroyed) return send(500, { error: 'Upload did not complete. Try again while connected.' }); return; }
+      const requestId = req.headers['x-walleto-upload-id'];
+      if (requestId !== undefined && (typeof requestId !== 'string' || !/^[a-f0-9]{64}$/.test(requestId))) { req.resume(); return send(400, { error: 'Invalid upload request ID.' }); }
+      try { const result = await jobs.receive(req, { retainPhrases: true, requestId }); return send(202, result); }
+      catch (error) { if (!res.destroyed) return send(error?.code === 'UPLOAD_ID_CONFLICT' ? 409 : 500, { error: error?.code === 'UPLOAD_ID_CONFLICT' ? error.message : 'Upload did not complete. Check its status before retrying.' }); return; }
     }
     if (!match) return send(404, { error: 'Not found.' });
     const [, id, action] = match;

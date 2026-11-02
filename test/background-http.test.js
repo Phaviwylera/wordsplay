@@ -39,6 +39,7 @@ test('background endpoints require SSH-style loopback host, same origin and a jo
     assert.equal((await request(port, 'POST', '/api/background/jobs', { ...headers, host: 'example.com' })).status, 403);
     assert.equal((await request(port, 'POST', '/api/background/jobs', { ...headers, origin: 'http://evil.example' })).status, 403);
     assert.equal((await request(port, 'POST', '/api/background/jobs', { host, 'content-type': 'application/octet-stream' })).status, 403);
+    assert.equal((await request(port, 'POST', '/api/background/jobs', { ...headers, 'x-walleto-upload-id': 'bad' }, '')).status, 400);
     const result = await request(port, 'POST', '/api/background/jobs', headers, '');
     assert.equal(result.status, 202);
     const { id, token } = result.body;
@@ -49,6 +50,15 @@ test('background endpoints require SSH-style loopback host, same origin and a jo
     const dashboard = await request(port, 'GET', `/api/background/jobs/${id}/dashboard?assetOffset=0&walletOffset=0&network=ethereum`, { host, authorization: `Bearer ${token}` });
     assert.equal(dashboard.status, 200); assert.deepEqual(dashboard.body.assets, []); assert.deepEqual(dashboard.body.walletPage, []);
     assert.equal(dashboard.body.network, 'ethereum'); assert.equal(dashboard.body.market.usdToInr, 83);
+    const uploadId = 'c'.repeat(64);
+    const duplicateUpload = await request(port, 'POST', '/api/background/jobs', { ...headers, 'x-walleto-upload-id': uploadId }, '');
+    assert.equal(duplicateUpload.status, 202);
+    const checkHeaders = { host, origin: `http://${host}`, 'content-type': 'application/json' };
+    const checked = await request(port, 'POST', '/api/background/uploads/check', checkHeaders, JSON.stringify({ requestId: uploadId }));
+    assert.equal(checked.status, 200); assert.equal(checked.body.found, true);
+    assert.equal(checked.body.id, duplicateUpload.body.id); assert.equal(checked.body.token, uploadId);
+    assert.equal((await request(port, 'POST', '/api/background/uploads/check', { ...checkHeaders, origin: 'http://evil.example' }, JSON.stringify({ requestId: uploadId }))).status, 403);
+    assert.equal((await request(port, 'POST', '/api/background/uploads/check', checkHeaders, JSON.stringify({ requestId: 'invalid' }))).status, 400);
     const market = await request(port, 'GET', '/api/market', { host });
     assert.equal(market.status, 200); assert.equal(market.body.currency, 'INR');
     assert.equal((await request(port, 'POST', '/api/market', { host })).status, 405);

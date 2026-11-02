@@ -120,7 +120,7 @@ test('a private Tailscale origin is validated, passed into the loopback-only app
   try {
     assert.equal(h.result.status, 0, h.result.stderr);
     assert.ok(h.log.includes('-p 127.0.0.1:3000:3000') && h.log.includes('WALLETO_TRUSTED_ORIGIN=https://walleto-device.example-tailnet.ts.net'));
-    assert.equal(fs.readFileSync(path.join(h.state, 'deployed-worker-settings'), 'utf8').trim(), 'enabled:24:4:walleto-device.example-tailnet.ts.net');
+    assert.equal(fs.readFileSync(path.join(h.state, 'deployed-worker-settings'), 'utf8').trim(), 'enabled:32:6:walleto-device.example-tailnet.ts.net');
   } finally { fs.rmSync(h.dir, { recursive: true, force: true }); }
 });
 
@@ -171,7 +171,7 @@ test('enabling the private worker redeploys even when the commit is unchanged', 
   try {
     assert.equal(h.result.status, 0, h.result.stderr);
     assert.match(h.log, /WALLETO_BACKGROUND_DIR=/);
-    assert.equal(fs.readFileSync(path.join(h.state, 'deployed-worker-settings'), 'utf8').trim(), 'enabled:24:4');
+    assert.equal(fs.readFileSync(path.join(h.state, 'deployed-worker-settings'), 'utf8').trim(), 'enabled:32:6');
   } finally { fs.rmSync(h.dir, { recursive: true, force: true }); }
 });
 

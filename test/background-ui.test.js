@@ -22,7 +22,7 @@ async function until(check, timeout = 5000) {
   const start = Date.now();
   while (!check()) { if (Date.now() - start > timeout) throw new Error('File dashboard UI did not finish'); await wait(); }
 }
-function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets = null, assets, recentAssets = [], wallets, hiddenAddresses, restoreFails = false, incomplete = 0, getPhrase, dashboardHook, watchFetch, recover, generate, jobKind, addressFormat, hasBnbChecks, generationActive = false, generationReason, market = { currency: 'INR', usdToInr: 83, prices: {} }, knownValue, jobStatus = 'finished', timers } = {}) {
+function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets = null, assets, recentAssets = [], wallets, hiddenAddresses, restoreFails = false, incomplete = 0, getPhrase, dashboardHook, watchFetch, recover, generate, jobKind, addressFormat, hasBnbChecks, generationActive = false, generationReason, market = { currency: 'INR', usdToInr: 83, prices: {} }, knownValue, jobStatus = 'finished', uploadStatus, savedJobs, timers } = {}) {
   const dom = new JSDOM(html, { url, runScripts: 'outside-only' });
   const w = dom.window; const $ = id => w.document.getElementById(id);
   if (timers) { const original = w.setTimeout.bind(w); w.setTimeout = (fn, delay, ...args) => { timers.push(delay); return original(fn, delay, ...args); }; }
@@ -33,6 +33,7 @@ function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets 
   const allWallets = wallets || [{ address, total: 5, completed: 5, incomplete, hasAssets: true }];
   const hidden = hiddenAddresses ? new Set(hiddenAddresses) : null;
   if (savedJob) w.localStorage.setItem('walleto.background-job', JSON.stringify({ id, token }));
+  if (savedJobs) w.localStorage.setItem('walleto.background-jobs', JSON.stringify(savedJobs));
   if (savedWallets) w.localStorage.setItem('walleto.wallets', JSON.stringify(savedWallets));
   w.AbortSignal = global.AbortSignal; w.TextDecoder = global.TextDecoder;
   const BlobReader = w.FileReader;
@@ -45,17 +46,23 @@ function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets 
   w.XMLHttpRequest = class {
     constructor() { this.upload = {}; xhrs.push(this); }
     open(method, resource) { this.method = method; this.resource = resource; }
-    setRequestHeader(name, value) { this.header = [name, value]; }
+    setRequestHeader(name, value) { (this.headers ||= {})[name] = value; if (name === 'Content-Type') this.header = [name, value]; }
     send(file) { this.file = file; }
     finish(status = 202, body = { id, token }) { this.status = status; this.responseText = JSON.stringify(body); this.onload(); }
+    fail() { this.onerror(); }
   };
   w.fetch = async (resource, options = {}) => {
     const target = String(resource); requests.push({ url: target, options });
     if (target.startsWith('/api/scan')) return watchFetch ? watchFetch(target, options) : { ok: true, json: async () => ({ assets: [{ ...native, rawBalance: '0' }] }) };
     if (target === '/api/background/reconnect') return recover ? recover(options) : { ok: false };
+    if (target === '/api/background/uploads/check') return uploadStatus ? uploadStatus(options) : { ok: true, json: async () => ({ found: false }) };
     if (target === '/api/background/jobs/generate') return generate ? generate(options) : { ok: false, status: 404 };
     const requestedId = target.match(/\/jobs\/([a-f0-9]{64})/)?.[1];
-    assert.equal(options.headers.Authorization, `Bearer ${requestedId === id2 ? token2 : token}`);
+    const storedLinks = JSON.parse(w.localStorage.getItem('walleto.background-jobs') || '[]');
+    const storedLink = storedLinks.find(item => item.id === requestedId);
+    const expectedToken = storedLink?.token || (requestedId === id2 ? token2 : token);
+    assert.equal(options.headers.Authorization, `Bearer ${expectedToken}`);
+    if (requestedId && target === `/api/background/jobs/${requestedId}`) return { ok: true, json: async () => ({ id: requestedId, kind: storedLink?.kind || (requestedId === id2 ? 'addresses' : jobKind || 'upload'), status: jobStatus, wallets: allWallets.length, total: allWallets.length * 5, completed: allWallets.length * 5, incomplete: currentIncomplete, createdAt: new Date().toISOString() }) };
     if (target.includes('/dashboard')) {
       const params = new URL(target, url).searchParams;
       if (dashboardHook) await dashboardHook(params);
@@ -145,8 +152,12 @@ test('selecting a file uploads it directly, shows progress in the main dashboard
   assert.match($('progress-text').textContent, /Uploading/i, '100% sent is not an acknowledgment');
   assert.match($('progress-detail').textContent, /until the upload is confirmed/i);
   assert.equal(w.localStorage.getItem('walleto.background-jobs'), null);
+  const pending = JSON.parse(w.localStorage.getItem('walleto.pending-upload'));
+  assert.match(pending.id, /^[a-f0-9]{64}$/);
+  assert.equal(xhrs[0].headers['X-Walleto-Upload-ID'], pending.id);
   xhrs[0].finish();
   await until(() => $('asset-list').querySelector('.asset-open'));
+  assert.equal(w.localStorage.getItem('walleto.pending-upload'), null);
   assert.match($('import-status').textContent, /Upload confirmed.*laptop is off/i);
   assert.match($('progress-text').textContent, /Server scan complete/i);
   assert.equal($('wallet-count').textContent, '1'); assert.equal($('asset-count').textContent, '1');
@@ -159,6 +170,49 @@ test('selecting a file uploads it directly, shows progress in the main dashboard
   assert.ok(requests.every(item => item.url.includes('/dashboard')));
   assert.ok(!JSON.stringify(requests).includes(phrase));
   dom.window.close();
+});
+
+test('an ambiguous upload is reconciled with EC2 and reconnects the existing job without resending the file', async () => {
+  let checkedId;
+  const ctx = setup({ uploadStatus: options => {
+    const body = JSON.parse(options.body); checkedId = body.requestId;
+    return { ok: true, json: async () => ({ found: true, pending: false, id, token: body.requestId, kind: 'upload', status: 'finished' }) };
+  } });
+  const { dom, w, $, xhrs, requests } = ctx;
+  try {
+    ctx.selectFile(new w.File([phrase], 'wallets.txt'));
+    const attempt = JSON.parse(w.localStorage.getItem('walleto.pending-upload'));
+    assert.equal(xhrs[0].headers['X-Walleto-Upload-ID'], attempt.id);
+    xhrs[0].fail();
+    await until(() => $('asset-list').querySelector('.asset-open'));
+    assert.equal(checkedId, attempt.id);
+    assert.equal(requests.filter(item => item.url === '/api/background/uploads/check').length, 1);
+    assert.equal(w.localStorage.getItem('walleto.pending-upload'), null);
+    assert.deepEqual(JSON.parse(w.localStorage.getItem('walleto.background-jobs')), [{ id, token: attempt.id }]);
+    assert.equal(xhrs.length, 1, 'the accepted upload is never sent a second time');
+    assert.match($('import-status').textContent, /found on EC2 and reconnected/i);
+  } finally { dom.window.close(); }
+});
+
+test('a missing EC2 record exposes a status check and reuses the same ID only for an explicit retry', async () => {
+  const ctx = setup({ uploadStatus: () => ({ ok: true, json: async () => ({ found: false }) }) });
+  const { dom, w, $, xhrs } = ctx;
+  try {
+    const file = new w.File([phrase], 'wallets.txt');
+    ctx.selectFile(file);
+    const firstId = xhrs[0].headers['X-Walleto-Upload-ID'];
+    xhrs[0].fail();
+    await until(() => JSON.parse(w.localStorage.getItem('walleto.pending-upload'))?.checkedNotFound === true);
+    assert.equal($('check-upload').hidden, false);
+    assert.match($('import-status').textContent, /No matching upload is recorded/i);
+    ctx.selectFile(new w.File([phrase + 'x'], 'different.txt'));
+    assert.equal(xhrs.length, 1, 'a different-size file cannot reuse the uncertain request ID');
+    assert.match($('import-status').textContent, /Choose the same file/i);
+    ctx.selectFile(file);
+    assert.equal(xhrs.length, 2);
+    assert.equal(xhrs[1].headers['X-Walleto-Upload-ID'], firstId);
+    assert.match(ctx.confirmations.at(-1), /same safe request ID/i);
+  } finally { dom.window.close(); }
 });
 
 test('declined or unavailable uploads never fall back to browser processing', async () => {
@@ -302,6 +356,32 @@ test('multiple uploaded files are linked as separate server jobs and remain indi
   assert.equal(w.localStorage.getItem('walleto.wallets'), null); assert.equal(ctx.deriveCalls(), 0);
   assert.ok(requests.every(item => !item.url.startsWith('/api/scan')));
   dom.window.close();
+});
+
+test('the scan workspace shows the newest twenty jobs together and pages older jobs without losing per-job links', async () => {
+  const savedJobs = Array.from({ length: 23 }, (_, index) => ({
+    id: index.toString(16).padStart(64, '0'), token: (index + 100).toString(16).padStart(64, '0'),
+    ...(index % 3 === 0 ? { kind: 'generated' } : index % 3 === 1 ? { kind: 'addresses' } : {}),
+  }));
+  const ctx = setup({ savedJobs }); const { dom, $, requests } = ctx;
+  try {
+    await until(() => $('scan-job-grid').querySelectorAll('.scan-job-card').length === 20);
+    assert.equal($('scan-jobs').hidden, false);
+    assert.equal($('scan-jobs-count').textContent, '23 scans');
+    assert.equal($('scan-job-page-label').textContent, '4–23 of 23');
+    assert.equal($('scan-job-grid').querySelectorAll('[data-scan-job-id]')[0].dataset.scanJobId, savedJobs[22].id);
+    const selected = $('scan-job-grid').querySelector(`[data-scan-job-id="${savedJobs[21].id}"]`);
+    selected.click();
+    await until(() => requests.some(item => item.url.includes(`/jobs/${savedJobs[21].id}/dashboard`)));
+    assert.equal($('portfolio-source').value, `file:${savedJobs[21].id}`);
+    assert.equal($('scan-job-grid').querySelector(`[data-scan-job-id="${savedJobs[21].id}"]`).getAttribute('aria-current'), 'true');
+    $('scan-job-older').click();
+    assert.equal($('scan-job-grid').querySelectorAll('.scan-job-card').length, 3);
+    assert.equal($('scan-job-page-label').textContent, '1–3 of 23');
+    $('portfolio-watch').click();
+    assert.equal($('portfolio-watch').getAttribute('aria-pressed'), 'true');
+    assert.equal($('scan-job-grid').querySelectorAll('.scan-job-card').length, 3);
+  } finally { dom.window.close(); }
 });
 
 test('reopening a file job does not automatically scan existing watch-list entries in the browser', async () => {
