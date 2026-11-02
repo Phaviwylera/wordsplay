@@ -180,12 +180,12 @@ function renderAssetRows(items, rate) {
 function syncFileView() {
   fileScan?.setView({ assetOffset: fileAssetPage * PAGE_SIZE, walletOffset: fileWalletPage * PAGE_SIZE, network: $('#network-filter').value });
 }
-function renderHiddenControls(hidden, total, file) {
+function renderHiddenControls(hidden, total, file, publicOnly = false) {
   $('#restore-hidden').hidden = hidden === 0;
   $('#restore-hidden').disabled = hidden === 0;
   $('#restore-hidden').textContent = `Restore hidden wallets (${hidden.toLocaleString()})`;
   $('#zero-help').hidden = total === 0;
-  $('#zero-help').textContent = 'Wallets with no assets found are hidden only after all supported checks succeed. Limited token coverage: other chains, tokens and Bitcoin inscriptions may be missed; incomplete checks stay visible.' + (file ? ' Restoring shows saved addresses and checks; recovery phrases for completed empty server wallets may have been discarded.' : '');
+  $('#zero-help').textContent = 'Wallets with no assets found are hidden only after all supported checks succeed. Limited token coverage: other chains, tokens and Bitcoin inscriptions may be missed; incomplete checks stay visible.' + (file ? (publicOnly ? ' Restoring shows saved addresses and checks.' : ' Restoring shows saved addresses and checks; recovery phrases for completed empty server wallets may have been discarded.') : '');
 }
 function fileAssetItems(rows, data, state) {
   if (!Array.isArray(rows)) return [];
@@ -212,7 +212,7 @@ function renderFile() {
   const state = fileScan?.snapshot() || { hasJob: false, uploading: false, data: null, error: 'Server import is unavailable.', view: {} };
   const data = state.data;
   $('#asset-description').textContent = 'Server-scanned results. Select an asset to export its wallet.';
-  $('#wallet-description').textContent = 'Addresses derived and scanned on EC2.';
+  $('#wallet-description').textContent = data?.kind === 'addresses' ? 'Public addresses uploaded and scanned on EC2.' : 'Addresses derived and scanned on EC2.';
   const totalWallets = data?.wallets || 0; const hiddenWallets = data?.hiddenWallets || 0;
   const count = data?.visibleWallets ?? totalWallets; const assetCount = data?.assetCount || 0; const filteredCount = data?.filteredAssetCount || 0;
   const hasView = Boolean(data && data.network === state.view.network && data.assetOffset === state.view.assetOffset && data.walletOffset === state.view.walletOffset);
@@ -228,7 +228,7 @@ function renderFile() {
   const rate = positive(data?.market?.usdToInr);
   const unavailableValue = !data || !Number.isFinite(data.knownValue) || (data.knownValue === 0 && (running || data.status === 'failed' || data.incomplete || data.unpriced)) || (!rate && count > 0);
   $('#total-value').textContent = unavailableValue ? '—' : count ? inrValue(data.knownValue, rate) : money(0);
-  $('#value-note').textContent = !data ? (state.uploading ? 'Uploading to the server…' : state.hasJob ? 'Connecting to EC2…' : 'Upload a .txt file to begin') : !rate && count ? 'INR exchange rate unavailable · refresh to retry' : data.status === 'failed' ? 'Server processing failed · saved results may be partial or previous' : running ? 'Partial results while EC2 scans · previous balances may be shown' : data.incomplete ? 'Partial results · some balances may be previous' : data.unpriced ? `${data.unpriced} asset${data.unpriced === 1 ? '' : 's'} without a price` : data.kind === 'generated' ? 'Across this generated scan' : 'Across this uploaded file';
+  $('#value-note').textContent = !data ? (state.uploading ? 'Uploading to the server…' : state.hasJob ? 'Connecting to EC2…' : 'Upload a .txt or .csv file to begin') : !rate && count ? 'INR exchange rate unavailable · refresh to retry' : data.status === 'failed' ? 'Server processing failed · saved results may be partial or previous' : running ? 'Partial results while EC2 scans · previous balances may be shown' : data.incomplete ? 'Partial results · some balances may be previous' : data.unpriced ? `${data.unpriced} asset${data.unpriced === 1 ? '' : 's'} without a price` : data.kind === 'generated' ? 'Across this generated scan' : data.kind === 'addresses' ? 'Across this public-address batch' : 'Across this uploaded file';
   renderRateTime(data?.market);
   $('#wallet-count').textContent = $('#wallet-badge').textContent = count;
   $('#asset-count').textContent = assetCount; $('#asset-badge').textContent = filteredCount;
@@ -240,31 +240,31 @@ function renderFile() {
     return `<div class="wallet-row"><span class="wallet-avatar">◈</span><div class="wallet-info"><strong title="${escapeHtml(wallet.address)}">${escapeHtml(wallet.address)}</strong><span class="wallet-scan-state ${css}">${escapeHtml(label)}</span></div></div>`;
   }).join('');
   $('#wallet-empty').hidden = count > 0;
-  if (!count) $('#wallet-empty').innerHTML = `<div class="wallet-illustration" aria-hidden="true">▧</div><div><strong>${hiddenWallets ? 'No visible wallets' : state.hasJob || state.uploading ? 'No server wallets yet' : 'No file uploaded'}</strong><p>${hiddenWallets ? `${hiddenWallets.toLocaleString()} wallet${hiddenWallets === 1 ? '' : 's'} hidden after supported checks. Restore to review.` : state.hasJob || state.uploading ? 'Addresses appear as EC2 processes the file.' : 'Choose a .txt file in Add wallets.'}</p></div>`;
+  if (!count) $('#wallet-empty').innerHTML = `<div class="wallet-illustration" aria-hidden="true">▧</div><div><strong>${hiddenWallets ? 'No visible wallets' : state.hasJob || state.uploading ? 'No server wallets yet' : 'No file uploaded'}</strong><p>${hiddenWallets ? `${hiddenWallets.toLocaleString()} wallet${hiddenWallets === 1 ? '' : 's'} hidden after supported checks. Restore to review.` : state.hasJob || state.uploading ? 'Addresses appear as EC2 processes the file.' : 'Choose a .txt or .csv file in Add wallets.'}</p></div>`;
   updatePager('wallet', fileWalletPage, count); updatePager('asset', fileAssetPage, filteredCount);
   $('#empty-state').hidden = items.length > 0;
   if (!items.length) {
     const empty = $('#empty-state');
     empty.querySelector('h3').textContent = state.hasJob && (!data || !hasView) ? 'Loading server results' : 'No assets to show';
-    empty.querySelector('p').textContent = state.uploading ? 'The file must finish uploading before EC2 can scan it.' : running ? 'EC2 is still processing the job and checking balances.' : data?.incomplete ? 'Some checks are incomplete; retry them to avoid missing assets.' : state.hasJob && (!data || !hasView) ? 'Fetching paginated results from EC2.' : state.hasJob ? 'No positive balances found for this view.' : 'Upload a .txt file to scan it on EC2.';
+    empty.querySelector('p').textContent = state.uploading ? 'The file must finish uploading before EC2 can scan it.' : running ? 'EC2 is still processing the job and checking balances.' : data?.incomplete ? 'Some checks are incomplete; retry them to avoid missing assets.' : state.hasJob && (!data || !hasView) ? 'Fetching paginated results from EC2.' : state.hasJob ? 'No positive balances found for this view.' : 'Upload a .txt or .csv file to scan it on EC2.';
     empty.querySelector('button').hidden = true;
   }
   $('#remove-all').disabled = true; $('#remove-all').textContent = `Remove all wallets (${wallets.length})`;
   $('#remove-all').title = 'Server results are managed with Delete server results & phrases.';
-  renderHiddenControls(hiddenWallets, totalWallets, true);
+  renderHiddenControls(hiddenWallets, totalWallets, true, data?.kind === 'addresses');
   $('#refresh').title = 'Reload server results and prices';
   $('#refresh').disabled = !state.hasJob || state.uploading; $('#refresh').classList.toggle('spinning', Boolean(state.loading));
   $('#scan-progress').hidden = !(state.hasJob || state.uploading || state.error);
   const percentage = state.uploading ? state.uploadPercent : data?.total ? Math.round(data.completed / data.total * 100) : data?.status === 'finished' ? 100 : 0;
   $('#progress-text').textContent = state.uploading ? 'Uploading file to EC2…' : !data ? (state.error ? 'Server connection unavailable' : 'Connecting to EC2…') : data.status === 'importing' ? 'Processing file on EC2…' : data.status === 'scanning' ? (data.kind === 'generated' ? (data.generationActive ? 'Generating and scanning on EC2…' : 'Finishing queued scans on EC2…') : 'Checking balances on EC2…') : data.status === 'failed' ? 'Server processing failed' : data.incomplete ? 'Server scan finished with incomplete checks' : 'Server scan complete';
   $('#progress-percent').textContent = `${percentage}%`; $('#progress-bar').value = percentage;
-  $('#progress-detail').textContent = state.uploading ? 'Keep this laptop on until the upload is confirmed. EC2 continues scanning after confirmation.' : data ? `${data.wallets.toLocaleString()} wallets · ${data.completed.toLocaleString()} of ${data.total.toLocaleString()} network checks · ${data.incomplete.toLocaleString()} incomplete${data.invalid ? ` · ${data.invalid.toLocaleString()} invalid lines` : ''}${data.kind === 'generated' ? (data.generationActive ? ' · generation target up to 100 per second; rate depends on scanning capacity' : data.generationReason ? ` · ${data.generationReason}` : '') : ''}` : state.hasJob ? 'Job credentials are stored in this browser for reconnection.' : 'No file is being processed locally.';
+  $('#progress-detail').textContent = state.uploading ? 'Keep this laptop on until the upload is confirmed. EC2 continues scanning after confirmation.' : data ? `${data.wallets.toLocaleString()} wallets · ${data.completed.toLocaleString()} of ${data.total.toLocaleString()} network checks · ${data.incomplete.toLocaleString()} incomplete${data.kind === 'addresses' ? ` · ${(data.lines || 0).toLocaleString()} CSV rows` : ''}${data.invalid ? ` · ${data.invalid.toLocaleString()} ${data.kind === 'addresses' ? 'invalid address cells' : 'invalid lines'}` : ''}${data.kind === 'generated' ? (data.generationActive ? ' · generation target up to 100 per second; rate depends on scanning capacity' : data.generationReason ? ` · ${data.generationReason}` : '') : ''}` : state.hasJob ? 'Job credentials are stored in this browser for reconnection.' : 'No file is being processed locally.';
   const error = state.error || (data?.status === 'failed' ? (data.error || 'Server processing failed.') : '') || (state.storageWarning ? 'Browser storage failed. Keep this page open or access to this job may be lost.' : '');
   $('#scan-errors').hidden = !error; $('#scan-errors').textContent = error;
   $('#scan-status').hidden = !error; $('#scan-status').textContent = error;
   $('#retry-failed').hidden = !(data?.status === 'finished' && data.incomplete > 0); $('#retry-failed').disabled = false; $('#retry-failed').textContent = 'Retry incomplete checks';
   $('#stop-generation').hidden = !(data?.kind === 'generated' && data.generationActive);
-  $('#file-refresh-bnb').hidden = !(data?.status === 'finished' && totalWallets > 0);
+  $('#file-refresh-bnb').hidden = !(data?.status === 'finished' && totalWallets > 0 && data.hasBnbChecks !== false);
   $('#file-remove').hidden = !data || !['finished', 'failed'].includes(data.status);
 }
 let sourceOptionsKey = '';
@@ -275,10 +275,10 @@ function renderPortfolioSource() {
   if (key !== sourceOptionsKey) {
     select.replaceChildren();
     const watch = document.createElement('option'); watch.value = 'watch'; watch.textContent = 'Tracked addresses'; select.appendChild(watch);
-    let uploads = 0; let generated = 0;
+    let uploads = 0; let generated = 0; let addresses = 0;
     state.jobs.forEach(item => {
       const option = document.createElement('option'); option.value = `file:${item.id}`;
-      option.textContent = item.kind === 'generated' ? `Generated scan ${++generated}` : `Uploaded file ${++uploads}`;
+      option.textContent = item.kind === 'generated' ? `Generated scan ${++generated}` : item.kind === 'addresses' ? `Public-address CSV ${++addresses}` : `Uploaded file ${++uploads}`;
       option.disabled = state.uploading; select.appendChild(option);
     });
     if (state.uploading || !state.jobId) {
@@ -637,9 +637,10 @@ function openAssetExport(asset, opener) {
   const wallet = isFile && fileState?.jobId === asset.fileJobId ? asset.wallet : wallets.find(item => keyFor(item.address) === key);
   if (!key || !wallet || (isFile && fileState?.jobId !== asset.fileJobId)) return;
   if ($('#asset-export-dialog').open) closeAssetExport(false);
-  const remote = isFile && asset.remotePhraseAvailable;
-  const includePhrase = remote || sessionPhrases.has(key);
-  const custodyJson = includePhrase ? null : matchingCustodyJson(key);
+  const publicOnly = isFile && fileState?.data?.kind === 'addresses';
+  const remote = isFile && !publicOnly && asset.remotePhraseAvailable;
+  const includePhrase = !publicOnly && (remote || sessionPhrases.has(key));
+  const custodyJson = includePhrase || publicOnly ? null : matchingCustodyJson(key);
   activeExport = { address: wallet.address, key, includePhrase, custodyJson, unlocking: false, source: isFile ? 'file' : 'watch', fileJobId: asset.fileJobId || null, remote, remotePhrase: null };
   exportOpener = opener;
   $('#asset-export-description').textContent = `${asset.name} on ${asset.meta.name} · ${quantity(asset.balance)} ${asset.symbol}`;
@@ -652,8 +653,9 @@ function openAssetExport(asset, opener) {
   $('#asset-export-unlock-status').hidden = true;
   $('#asset-export-unlock-status').textContent = '';
   hideExportPhrase();
-  $('#asset-export-note').textContent = remote
-    ? 'The recovery phrase is retained on EC2 and is retrieved over the private tunnel only when you reveal or export it.'
+  $('#asset-export-note').textContent = publicOnly
+    ? 'This CSV job imports public addresses only. No recovery phrases are available from it.'
+    : remote ? 'The recovery phrase is retained on EC2 and is retrieved over the private tunnel only when you reveal or export it.'
     : includePhrase ? 'The export includes this wallet address and its recovery phrase, which is available only in this tab.'
     : isFile ? (custodyJson ? 'This server job has no retained phrase. Unlock the matching wallet below or export only the address.' : 'This server job has no retained phrase for export. Only the public address is available. Older scans may have discarded unmatched phrases before BUSD was checked; re-upload the file to link it again.')
     : wallet.source === 'seed'

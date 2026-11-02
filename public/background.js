@@ -10,7 +10,7 @@
   const view = { assetOffset: 0, walletOffset: 0, network: 'all' };
   const state = { data: null, error: '', loading: false, uploadPercent: 0 };
   const validJob = item => item && typeof item.id === 'string' && /^[a-f0-9]{64}$/.test(item.id) && typeof item.token === 'string' && /^[a-f0-9]{64}$/.test(item.token);
-  const normalizeJob = item => ({ id: item.id, token: item.token, ...(item.kind === 'generated' ? { kind: 'generated' } : {}) });
+  const normalizeJob = item => ({ id: item.id, token: item.token, ...(['generated', 'addresses'].includes(item.kind) ? { kind: item.kind } : {}) });
   try {
     const saved = localStorage.getItem(storageKey);
     if (saved !== null) {
@@ -58,7 +58,7 @@
     el.textContent = message; el.hidden = false; el.classList.toggle('error', error);
   }
   function snapshot() {
-    return { hasJob: Boolean(job), jobId: job?.id || null, jobs: jobs.map(item => ({ id: item.id, ...(item.kind === 'generated' ? { kind: 'generated' } : {}) })), uploading, generating, storageWarning, ...state, view: { ...view } };
+    return { hasJob: Boolean(job), jobId: job?.id || null, jobs: jobs.map(item => ({ id: item.id, ...(['generated', 'addresses'].includes(item.kind) ? { kind: item.kind } : {}) })), uploading, generating, storageWarning, ...state, view: { ...view } };
   }
   async function request(suffix = '', method = 'GET') {
     if (!job || !privateAccess()) throw new Error('Reconnect to the EC2 app through the private SSH tunnel.');
@@ -255,26 +255,14 @@
   $('file-recovery-code').addEventListener('keydown', event => {
     if (event.key === 'Enter') { event.preventDefault(); reconnectFileJob(); }
   });
-  $('seed-file').addEventListener('change', () => {
-    const field = $('seed-file'); const file = field.files[0];
-    // Do not display a file name: it might itself contain sensitive information.
-    field.value = '';
-    if (!file) return;
-    if (uploading || reconnecting || generating) return importStatus('An upload, generation or reconnection is already in progress.', true);
-    if (!/\.txt$/i.test(file.name)) return importStatus('Choose a UTF-8 .txt file.', true);
-    if (!privateAccess()) return importStatus('File import requires the private SSH tunnel to EC2. The file was not processed or uploaded in this browser.', true);
-    try { localStorage.setItem(`${storageKey}.test`, '1'); localStorage.removeItem(`${storageKey}.test`); }
-    catch (_) { return importStatus('Browser storage is unavailable; the server job could not be safely linked for reconnection.', true); }
-    if (!confirm('Upload this .txt file containing recovery phrases to EC2? The server processes it and temporarily stores encrypted copies of valid phrases; the encryption key is on the same EC2 volume. Server administrators, a compromise, snapshots or backups may expose them, and deletion is not guaranteed secure erasure. Do not use phrases protecting valuable funds. Keep this laptop on until the upload is confirmed. Continue only through a private SSH tunnel?')) {
-      return importStatus('Upload cancelled; no file was sent.');
-    }
+  function uploadFile(file, kind) {
     uploading = true; state.uploadPercent = 0; state.error = ''; state.data = null; state.loading = false;
     job = null; requestVersion++; clearTimeout(timer);
     Object.assign(view, { assetOffset: 0, walletOffset: 0, network: 'all' });
     importStatus('Uploading to EC2 — keep the laptop on until the upload is confirmed.');
     window.dispatchEvent(new Event('file-scan:started')); notify();
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/api/background/jobs');
+    xhr.open('POST', kind === 'addresses' ? '/api/background/jobs/addresses' : '/api/background/jobs');
     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
     xhr.upload.onprogress = event => {
       if (event.lengthComputable && event.total > 0) state.uploadPercent = Math.max(0, Math.min(100, Math.floor(event.loaded * 100 / event.total)));
@@ -289,18 +277,38 @@
       uploading = false;
       let result;
       try { result = JSON.parse(xhr.responseText); } catch (_) { return failed(); }
-      if (xhr.status !== 202 || !/^[a-f0-9]{64}$/.test(result.id || '') || !/^[a-f0-9]{64}$/.test(result.token || '')) {
-        state.error = 'Upload was not confirmed. Check the private tunnel and EC2 worker before retrying.';
+      if (xhr.status !== 202 || !validJob(result) || (kind === 'addresses' && result.kind !== 'addresses')) {
+        state.error = xhr.status === 413 && kind === 'addresses' ? 'CSV exceeds the 256 MiB upload limit.' : 'Upload was not confirmed. Check the private tunnel and EC2 worker before retrying.';
         importStatus(state.error, true); notify(); return;
       }
-      job = { id: result.id, token: result.token };
+      job = normalizeJob(result);
       jobs.push(job); persistJobs();
       const warning = storageWarning ? ' Browser storage failed; keep this page open or access to this job may be lost.' : '';
       importStatus(`Upload confirmed. EC2 continues processing even if this laptop is off.${warning}`, storageWarning);
       refresh();
     };
     try { xhr.send(file); } catch (_) { failed(); }
-  });
+  }
+  function selectUpload(fieldId, kind) {
+    const field = $(fieldId); const file = field.files[0];
+    // Do not read or display a filename: it might itself contain sensitive information.
+    field.value = '';
+    if (!file) return;
+    if (uploading || reconnecting || generating) return importStatus('An upload, generation or reconnection is already in progress.', true);
+    const addresses = kind === 'addresses';
+    if (addresses ? !/\.csv$/i.test(file.name) : !/\.txt$/i.test(file.name)) return importStatus(addresses ? 'Choose a UTF-8 .csv file.' : 'Choose a UTF-8 .txt file.', true);
+    if (addresses && file.size > 256 * 1024 * 1024) return importStatus('CSV exceeds the 256 MiB upload limit.', true);
+    if (!privateAccess()) return importStatus('File import requires the private SSH tunnel to EC2. The file was not processed or uploaded in this browser.', true);
+    try { localStorage.setItem(`${storageKey}.test`, '1'); localStorage.removeItem(`${storageKey}.test`); }
+    catch (_) { return importStatus('Browser storage is unavailable; the server job could not be safely linked for reconnection.', true); }
+    const confirmation = addresses
+      ? 'Upload this public-address CSV to EC2? The entire file is sent to the server and temporarily stored encrypted, with its key on the same EC2 volume. Include public addresses only: remove any recovery phrases or private keys first. Keep this laptop on until the upload is confirmed. Continue only through a private SSH tunnel?'
+      : 'Upload this .txt file containing recovery phrases to EC2? The server processes it and temporarily stores encrypted copies of valid phrases; the encryption key is on the same EC2 volume. Server administrators, a compromise, snapshots or backups may expose them, and deletion is not guaranteed secure erasure. Do not use phrases protecting valuable funds. Keep this laptop on until the upload is confirmed. Continue only through a private SSH tunnel?';
+    if (!confirm(confirmation)) return importStatus('Upload cancelled; no file was sent.');
+    uploadFile(file, kind);
+  }
+  $('seed-file').addEventListener('change', () => selectUpload('seed-file', 'upload'));
+  $('address-file').addEventListener('change', () => selectUpload('address-file', 'addresses'));
   window.addEventListener('beforeunload', event => { if (uploading || generating) { event.preventDefault(); event.returnValue = ''; } });
   window.addEventListener('pagehide', () => { $('file-recovery-code').value = ''; requestVersion++; clearTimeout(timer); });
   window.addEventListener('pageshow', event => { if (event.persisted && job) refresh(); });

@@ -206,3 +206,46 @@ test('EC2 generation requires loopback, a same-origin bounded empty request and 
     await stopChild(child); fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('public-address CSV jobs require the private tunnel, enforce size and retain their kind on recovery', { timeout: 20000 }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-http-csv-'));
+  const source = `require('./lib/market').getMarket=async()=>({currency:'INR',usdToInr:83,prices:{}});
+    require('./lib/scanner').scanWallet=async (address,network)=>({address,network,assets:[{type:'native',symbol:network==='bitcoin'?'BTC':'ETH',rawBalance:'1',decimals:18,price:null},...(network==='bnb'?[{type:'BEP-20',symbol:'BUSD',contract:'0xe9e7cea3dedca5984780bafc599bd69add087d56',rawBalance:'0',decimals:18,price:null}]:[])],...(network==='bnb'?{coverage:'bnb-and-busd'}:{})});
+    require('./server');`;
+  const child = spawn(process.execPath, ['-e', source], { env: { ...process.env, PORT: '0', WALLETO_BACKGROUND_DIR: dir }, stdio: ['ignore', 'pipe', 'pipe'] });
+  try {
+    const port = await childPort(child); const host = `127.0.0.1:${port}`;
+    const headers = { host, origin: `http://${host}`, 'content-type': 'application/octet-stream' };
+    const endpoint = '/api/background/jobs/addresses';
+    const csv = `bitcoin,ethereum,bnb_smart_chain,base\nbc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4,0x${'1'.repeat(40)},0x${'1'.repeat(40)},0x${'1'.repeat(40)}\n`;
+    assert.equal((await request(port, 'POST', endpoint, { ...headers, host: 'evil.example' }, csv)).status, 403);
+    assert.equal((await request(port, 'POST', endpoint, { ...headers, origin: 'http://evil.example' }, csv)).status, 403);
+    assert.equal((await request(port, 'POST', endpoint, { host, 'content-type': 'application/octet-stream' }, csv)).status, 403);
+    assert.equal((await request(port, 'POST', endpoint, { ...headers, 'content-type': 'text/csv' }, csv)).status, 403);
+    assert.equal((await request(port, 'POST', endpoint, { ...headers, 'content-length': String(256 * 1024 * 1024 + 1) })).status, 413);
+    const uploaded = await request(port, 'POST', endpoint, headers, csv);
+    assert.equal(uploaded.status, 202); assert.equal(uploaded.body.kind, 'addresses');
+    assert.deepEqual(Object.keys(uploaded.body).sort(), ['id', 'kind', 'token']);
+    const { id, token } = uploaded.body;
+    assert.equal((await request(port, 'GET', `/api/background/jobs/${id}`, { host })).status, 404);
+    let status;
+    for (let i = 0; i < 200; i++) {
+      status = (await request(port, 'GET', `/api/background/jobs/${id}`, { host, authorization: `Bearer ${token}` })).body;
+      if (['finished', 'failed'].includes(status.status)) break;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.equal(status.status, 'finished'); assert.equal(status.kind, 'addresses');
+    assert.equal(status.wallets, 2); assert.equal(status.total, 6); assert.equal(status.completed, 6);
+    assert.equal(status.retainsPhrases, false); assert.equal(status.phraseMatching, false);
+    const dashboard = await request(port, 'GET', `/api/background/jobs/${id}/dashboard`, { host, authorization: `Bearer ${token}` });
+    assert.equal(dashboard.status, 200); assert.equal(dashboard.body.assetCount, 6);
+    assert.ok(dashboard.body.assets.some(row => row.network === 'bitcoin'));
+    assert.ok(dashboard.body.assets.every(row => row.phraseAvailable === false));
+    for (let i = 0; i < 100 && !fs.existsSync(socketPath(dir)); i++) await new Promise(resolve => setTimeout(resolve, 20));
+    const issued = await controlRequest(socketPath(dir), { action: 'issue', id });
+    const recovered = await request(port, 'POST', '/api/background/reconnect', { host, origin: `http://${host}`, 'content-type': 'application/json' }, JSON.stringify({ code: issued.code }));
+    assert.equal(recovered.status, 200); assert.equal(recovered.body.kind, 'addresses'); assert.notEqual(recovered.body.token, token);
+    assert.equal((await request(port, 'GET', `/api/background/jobs/${id}`, { host, authorization: `Bearer ${token}` })).status, 404);
+    assert.equal((await request(port, 'GET', `/api/background/jobs/${id}`, { host, authorization: `Bearer ${recovered.body.token}` })).body.kind, 'addresses');
+  } finally { await stopChild(child); fs.rmSync(dir, { recursive: true, force: true }); }
+});
