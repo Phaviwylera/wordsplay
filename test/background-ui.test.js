@@ -22,7 +22,7 @@ async function until(check, timeout = 5000) {
   const start = Date.now();
   while (!check()) { if (Date.now() - start > timeout) throw new Error('File dashboard UI did not finish'); await wait(); }
 }
-function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets = null, assets, recentAssets = [], wallets, hiddenAddresses, restoreFails = false, incomplete = 0, getPhrase, dashboardHook, watchFetch, recover, generate, jobKind, hasBnbChecks, generationActive = false, generationReason, market = { currency: 'INR', usdToInr: 83, prices: {} }, knownValue, jobStatus = 'finished', timers } = {}) {
+function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets = null, assets, recentAssets = [], wallets, hiddenAddresses, restoreFails = false, incomplete = 0, getPhrase, dashboardHook, watchFetch, recover, generate, jobKind, addressFormat, hasBnbChecks, generationActive = false, generationReason, market = { currency: 'INR', usdToInr: 83, prices: {} }, knownValue, jobStatus = 'finished', timers } = {}) {
   const dom = new JSDOM(html, { url, runScripts: 'outside-only' });
   const w = dom.window; const $ = id => w.document.getElementById(id);
   if (timers) { const original = w.setTimeout.bind(w); w.setTimeout = (fn, delay, ...args) => { timers.push(delay); return original(fn, delay, ...args); }; }
@@ -64,7 +64,7 @@ function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets 
       const visibleWallets = hidden ? allWallets.filter(row => !hidden.has(row.address)) : allWallets;
       const hiddenCount = hidden?.size || 0;
       return { ok: true, json: async () => ({
-        id: requestedId, status: jobStatus, ...(jobKind ? { kind: jobKind, generationActive, generationReason, generationTarget: 100 } : {}), ...(hasBnbChecks === undefined ? {} : { hasBnbChecks }), wallets: allWallets.length, ...(hidden ? { hiddenWallets: hiddenCount, visibleWallets: visibleWallets.length } : {}), total: allWallets.length * 5, completed: allWallets.length * 5,
+        id: requestedId, status: jobStatus, ...(jobKind ? { kind: jobKind, generationActive, generationReason, generationTarget: 100 } : {}), ...(addressFormat ? { addressFormat } : {}), ...(hasBnbChecks === undefined ? {} : { hasBnbChecks }), wallets: allWallets.length, ...(hidden ? { hiddenWallets: hiddenCount, visibleWallets: visibleWallets.length } : {}), total: allWallets.length * 5, completed: allWallets.length * 5,
         invalid: 0, incomplete: currentIncomplete, phraseMatching: true, retainsPhrases: true, market,
         knownValue: knownValue ?? allAssets.length * 2, unpriced: 0, assetCount: allAssets.length, filteredAssetCount: filtered.length,
         assetOffset, walletOffset, network: filter, assets: filtered.slice(assetOffset, assetOffset + 100).map(row => ({ phraseAvailable: true, ...row })),
@@ -97,7 +97,11 @@ function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets 
     Object.defineProperty($('address-file'), 'files', { configurable: true, value: [file] });
     $('address-file').dispatchEvent(new w.Event('change', { bubbles: true }));
   }
-  return { dom, w, $, BlobReader, requests, xhrs, blobs, downloads, confirmations, revoked, selectFile, selectAddressFile, deriveCalls: () => deriveCalls, directCalls: () => directCalls };
+  function selectAddressKeyFile(file) {
+    Object.defineProperty($('address-key-file'), 'files', { configurable: true, value: [file] });
+    $('address-key-file').dispatchEvent(new w.Event('change', { bubbles: true }));
+  }
+  return { dom, w, $, BlobReader, requests, xhrs, blobs, downloads, confirmations, revoked, selectFile, selectAddressFile, selectAddressKeyFile, deriveCalls: () => deriveCalls, directCalls: () => directCalls };
 }
 
 test('file selection on a public site is blocked without any local parsing or scanning', () => {
@@ -721,7 +725,7 @@ test('public-address CSV uploads directly to EC2 as a distinct address-only job'
     await until(() => $('asset-list').querySelector('.asset-open'));
     assert.deepEqual(JSON.parse(w.localStorage.getItem('walleto.background-jobs')), [{ id, token, kind: 'addresses' }]);
     assert.equal(w.localStorage.getItem('walleto.wallets'), null);
-    assert.match($('portfolio-source').selectedOptions[0].textContent, /Public-address CSV 1/i);
+    assert.match($('portfolio-source').selectedOptions[0].textContent, /Public-address batch 1/i);
     assert.match($('wallet-description').textContent, /public addresses uploaded/i);
     assert.match($('progress-detail').textContent, /CSV rows/i);
     assert.equal(ctx.deriveCalls(), 0); assert.equal(ctx.directCalls(), 0);
@@ -732,6 +736,48 @@ test('public-address CSV uploads directly to EC2 as a distinct address-only job'
     assert.match($('asset-export-download').textContent, /address only/i);
     assert.equal(requests.some(item => item.url.includes('/phrase')), false);
   } finally { dom.window.close(); }
+});
+
+test('Ethereum address/private-key text uploads from the address-search side to the EC2 address job', async () => {
+  const ctx = setup({ jobKind: 'addresses', addressFormat: 'key-pairs' });
+  const { dom, w, $, xhrs, requests, confirmations } = ctx;
+  try {
+    assert.ok($('address-key-file').closest('#address-form'));
+    assert.equal($('address-key-file').closest('#seed-form'), null);
+    const privateKey = `0x${'0'.repeat(63)}1`;
+    const file = new w.File([`${new Wallet(privateKey).address}\t${privateKey}\n`], 'key-pairs.tsv', { type: 'text/tab-separated-values' });
+    file.text = () => { throw new Error('Browser must not read private-key file'); };
+    ctx.selectAddressKeyFile(file);
+    assert.equal(xhrs.length, 1); assert.equal(xhrs[0].file, file);
+    assert.equal(xhrs[0].method, 'POST'); assert.equal(xhrs[0].resource, '/api/background/jobs/address-keys');
+    assert.match(confirmations[0], /raw private keys will be sent/i);
+    assert.match(confirmations[0], /encrypted on EC2/i);
+    assert.match(confirmations[0], /secure erasure is not guaranteed/i);
+    xhrs[0].finish(202, { id, token, kind: 'addresses' });
+    await until(() => $('asset-list').querySelector('.asset-open'));
+    assert.deepEqual(JSON.parse(w.localStorage.getItem('walleto.background-jobs')), [{ id, token, kind: 'addresses' }]);
+    assert.equal(w.localStorage.getItem('walleto.wallets'), null);
+    assert.match($('progress-detail').textContent, /key-pair rows/i);
+    assert.equal(ctx.deriveCalls(), 0); assert.equal(ctx.directCalls(), 0);
+    assert.equal(requests.some(item => item.url.includes('/phrase')), false);
+  } finally { dom.window.close(); }
+});
+
+test('key-pair selection is private-tunnel-only and checks format and upload size', () => {
+  const publicSite = setup({ url: 'https://wallet.example/' });
+  try {
+    publicSite.selectAddressKeyFile(new publicSite.w.File(['data'], 'keys.txt'));
+    assert.match(publicSite.$('import-status').textContent, /private SSH tunnel/i);
+    assert.equal(publicSite.xhrs.length, 0);
+  } finally { publicSite.dom.window.close(); }
+  const ctx = setup();
+  try {
+    const { w, $, xhrs } = ctx;
+    ctx.selectAddressKeyFile(new w.File(['data'], 'keys.csv'));
+    assert.match($('import-status').textContent, /UTF-8 .txt or .tsv/i); assert.equal(xhrs.length, 0);
+    const huge = new w.File(['x'], 'huge.tsv'); Object.defineProperty(huge, 'size', { value: 256 * 1024 * 1024 + 1 });
+    ctx.selectAddressKeyFile(huge); assert.match($('import-status').textContent, /256 MiB/i); assert.equal(xhrs.length, 0);
+  } finally { ctx.dom.window.close(); }
 });
 
 test('CSV selection is blocked on public origins, cancellation, wrong extension and oversize', () => {
@@ -759,7 +805,7 @@ test('reconnecting a public-address job retains its distinct portfolio label', a
   try {
     await until(() => $('portfolio-source').options.length >= 2);
     $('file-recovery-code').value = 'e'.repeat(64); $('file-reconnect').click();
-    await until(() => $('portfolio-source').selectedOptions[0]?.textContent.includes('Public-address CSV'));
+    await until(() => $('portfolio-source').selectedOptions[0]?.textContent.includes('Public-address batch'));
     assert.deepEqual(JSON.parse(w.localStorage.getItem('walleto.background-jobs')), [{ id, token }, { id: id2, token: token2, kind: 'addresses' }]);
   } finally { dom.window.close(); }
 });

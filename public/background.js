@@ -274,7 +274,7 @@
     importStatus('Uploading to EC2 — keep the laptop on until the upload is confirmed.');
     window.dispatchEvent(new Event('file-scan:started')); notify();
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', kind === 'addresses' ? '/api/background/jobs/addresses' : '/api/background/jobs');
+    xhr.open('POST', kind === 'addresses' ? '/api/background/jobs/addresses' : kind === 'addressKeys' ? '/api/background/jobs/address-keys' : '/api/background/jobs');
     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
     xhr.upload.onprogress = event => {
       if (event.lengthComputable && event.total > 0) state.uploadPercent = Math.max(0, Math.min(100, Math.floor(event.loaded * 100 / event.total)));
@@ -289,8 +289,9 @@
       uploading = false;
       let result;
       try { result = JSON.parse(xhr.responseText); } catch (_) { return failed(); }
-      if (xhr.status !== 202 || !validJob(result) || (kind === 'addresses' && result.kind !== 'addresses')) {
-        state.error = xhr.status === 413 && kind === 'addresses' ? 'CSV exceeds the 256 MiB upload limit.' : 'Upload was not confirmed. Check the private tunnel and EC2 worker before retrying.';
+      const addressJob = kind === 'addresses' || kind === 'addressKeys';
+      if (xhr.status !== 202 || !validJob(result) || (addressJob && result.kind !== 'addresses')) {
+        state.error = xhr.status === 413 && kind === 'addresses' ? 'CSV exceeds the 256 MiB upload limit.' : xhr.status === 413 && kind === 'addressKeys' ? 'Address/private-key file exceeds the 256 MiB upload limit.' : 'Upload was not confirmed. Check the private tunnel and EC2 worker before retrying.';
         importStatus(state.error, true); notify(); return;
       }
       job = normalizeJob(result);
@@ -307,20 +308,24 @@
     field.value = '';
     if (!file) return;
     if (uploading || reconnecting || generating) return importStatus('An upload, generation or reconnection is already in progress.', true);
-    const addresses = kind === 'addresses';
-    if (addresses ? !/\.csv$/i.test(file.name) : !/\.txt$/i.test(file.name)) return importStatus(addresses ? 'Choose a UTF-8 .csv file.' : 'Choose a UTF-8 .txt file.', true);
-    if (addresses && file.size > 256 * 1024 * 1024) return importStatus('CSV exceeds the 256 MiB upload limit.', true);
+    const addresses = kind === 'addresses' || kind === 'addressKeys';
+    const addressKeys = kind === 'addressKeys';
+    if (addressKeys ? !/\.(?:txt|tsv)$/i.test(file.name) : addresses ? !/\.csv$/i.test(file.name) : !/\.txt$/i.test(file.name)) return importStatus(addressKeys ? 'Choose a UTF-8 .txt or .tsv file.' : addresses ? 'Choose a UTF-8 .csv file.' : 'Choose a UTF-8 .txt file.', true);
+    if (addresses && file.size > 256 * 1024 * 1024) return importStatus(addressKeys ? 'Address/private-key file exceeds the 256 MiB upload limit.' : 'CSV exceeds the 256 MiB upload limit.', true);
     if (!privateAccess()) return importStatus('File import requires the private SSH tunnel or authenticated Tailscale URL to EC2. The file was not processed or uploaded in this browser.', true);
     try { localStorage.setItem(`${storageKey}.test`, '1'); localStorage.removeItem(`${storageKey}.test`); }
     catch (_) { return importStatus('Browser storage is unavailable; the server job could not be safely linked for reconnection.', true); }
-    const confirmation = addresses
-      ? 'Upload this public-address CSV to EC2? The entire file is sent to the server and temporarily stored encrypted, with its key on the same EC2 volume. Include public addresses only: remove any recovery phrases or private keys first. Keep this laptop on until the upload is confirmed. Continue only through a private SSH or authenticated Tailscale connection?'
-      : 'Upload this .txt file containing recovery phrases to EC2? The server processes it and temporarily stores encrypted copies of valid phrases; the encryption key is on the same EC2 volume. Server administrators, a compromise, snapshots or backups may expose them, and deletion is not guaranteed secure erasure. Do not use phrases protecting valuable funds. Keep this laptop on until the upload is confirmed. Continue only through a private SSH or authenticated Tailscale connection?';
+    const confirmation = addressKeys
+      ? 'Upload this address/private-key file to EC2? Raw private keys will be sent over the private tunnel and temporarily stored encrypted on EC2 while the worker verifies each pair and derives public addresses. The encryption key is on the same volume, so an administrator, compromise, snapshot or backup could expose them; secure erasure is not guaranteed. Only verified public addresses and scan results remain in the job. Continue only if you accept sending raw private keys to EC2; do not use keys protecting valuable funds.'
+      : addresses
+        ? 'Upload this public-address CSV to EC2? The entire file is sent to the server and temporarily stored encrypted, with its key on the same EC2 volume. Include public addresses only: remove any recovery phrases or private keys first. Keep this laptop on until the upload is confirmed. Continue only through a private SSH or authenticated Tailscale connection?'
+        : 'Upload this .txt file containing recovery phrases to EC2? The server processes it and temporarily stores encrypted copies of valid phrases; the encryption key is on the same EC2 volume. Server administrators, a compromise, snapshots or backups may expose them, and deletion is not guaranteed secure erasure. Do not use phrases protecting valuable funds. Keep this laptop on until the upload is confirmed. Continue only through a private SSH or authenticated Tailscale connection?';
     if (!confirm(confirmation)) return importStatus('Upload cancelled; no file was sent.');
     uploadFile(file, kind);
   }
   $('seed-file').addEventListener('change', () => selectUpload('seed-file', 'upload'));
   $('address-file').addEventListener('change', () => selectUpload('address-file', 'addresses'));
+  $('address-key-file').addEventListener('change', () => selectUpload('address-key-file', 'addressKeys'));
   window.addEventListener('beforeunload', event => { if (uploading || generating) { event.preventDefault(); event.returnValue = ''; } });
   window.addEventListener('pagehide', () => { $('file-recovery-code').value = ''; requestVersion++; clearTimeout(timer); });
   window.addEventListener('pageshow', event => { if (event.persisted && job) refresh(); });

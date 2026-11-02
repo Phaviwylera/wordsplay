@@ -211,6 +211,9 @@ function renderRecentFinds(items) {
 function renderFile() {
   const state = fileScan?.snapshot() || { hasJob: false, uploading: false, data: null, error: 'Server import is unavailable.', view: {} };
   const data = state.data;
+  const addressKeyRows = data?.addressFormat === 'key-pairs';
+  const addressRowLabel = addressKeyRows ? 'key-pair rows' : 'CSV rows';
+  const invalidAddressLabel = addressKeyRows ? 'invalid or mismatched pairs' : 'invalid address cells';
   $('#asset-description').textContent = 'Server-scanned results. Select an asset to export its wallet.';
   $('#wallet-description').textContent = data?.kind === 'addresses' ? 'Public addresses uploaded and scanned on EC2.' : 'Addresses derived and scanned on EC2.';
   const totalWallets = data?.wallets || 0; const hiddenWallets = data?.hiddenWallets || 0;
@@ -258,7 +261,7 @@ function renderFile() {
   const percentage = state.uploading ? state.uploadPercent : data?.total ? Math.round(data.completed / data.total * 100) : data?.status === 'finished' ? 100 : 0;
   $('#progress-text').textContent = state.uploading ? 'Uploading file to EC2…' : !data ? (state.error ? 'Server connection unavailable' : 'Connecting to EC2…') : data.status === 'importing' ? 'Processing file on EC2…' : data.status === 'scanning' ? (data.kind === 'generated' ? (data.generationActive ? 'Generating and scanning on EC2…' : 'Finishing queued scans on EC2…') : 'Checking balances on EC2…') : data.status === 'failed' ? 'Server processing failed' : data.incomplete ? 'Server scan finished with incomplete checks' : 'Server scan complete';
   $('#progress-percent').textContent = `${percentage}%`; $('#progress-bar').value = percentage;
-  $('#progress-detail').textContent = state.uploading ? 'Keep this laptop on until the upload is confirmed. EC2 continues scanning after confirmation.' : data ? `${data.wallets.toLocaleString()} wallets · ${data.completed.toLocaleString()} of ${data.total.toLocaleString()} network checks · ${data.incomplete.toLocaleString()} incomplete${data.kind === 'addresses' ? ` · ${(data.lines || 0).toLocaleString()} CSV rows` : ''}${data.invalid ? ` · ${data.invalid.toLocaleString()} ${data.kind === 'addresses' ? 'invalid address cells' : 'invalid lines'}` : ''}${data.kind === 'generated' ? `${data.generationActive ? ' · generation target up to 100 per second; rate depends on scanning capacity' : ''}${data.generationReason ? ` · ${data.generationReason}` : ''}${data.incomplete > 0 && data.status !== 'finished' ? ' · Incomplete checks are not automatically retried; stop generation and let queued scans finish, then retry them.' : ''}` : ''}` : state.hasJob ? 'Job credentials are stored in this browser for reconnection.' : 'No file is being processed locally.';
+  $('#progress-detail').textContent = state.uploading ? 'Keep this laptop on until the upload is confirmed. EC2 continues scanning after confirmation.' : data ? `${data.wallets.toLocaleString()} wallets · ${data.completed.toLocaleString()} of ${data.total.toLocaleString()} network checks · ${data.incomplete.toLocaleString()} incomplete${data.kind === 'addresses' ? ` · ${(data.lines || 0).toLocaleString()} ${addressRowLabel}` : ''}${data.invalid ? ` · ${data.invalid.toLocaleString()} ${data.kind === 'addresses' ? invalidAddressLabel : 'invalid lines'}` : ''}${data.kind === 'generated' ? `${data.generationActive ? ' · generation target up to 100 per second; rate depends on scanning capacity' : ''}${data.generationReason ? ` · ${data.generationReason}` : ''}${data.incomplete > 0 && data.status !== 'finished' ? ' · Incomplete checks are not automatically retried; stop generation and let queued scans finish, then retry them.' : ''}` : ''}` : state.hasJob ? 'Job credentials are stored in this browser for reconnection.' : 'No file is being processed locally.';
   const error = state.error || (data?.status === 'failed' ? (data.error || 'Server processing failed.') : '') || (state.storageWarning ? 'Browser storage failed. Keep this page open or access to this job may be lost.' : '');
   $('#scan-errors').hidden = !error; $('#scan-errors').textContent = error;
   $('#scan-status').hidden = !error; $('#scan-status').textContent = error;
@@ -279,7 +282,7 @@ function renderPortfolioSource() {
     let uploads = 0; let generated = 0; let addresses = 0;
     state.jobs.forEach(item => {
       const option = document.createElement('option'); option.value = `file:${item.id}`;
-      option.textContent = item.kind === 'generated' ? `Generated scan ${++generated}` : item.kind === 'addresses' ? `Public-address CSV ${++addresses}` : `Uploaded file ${++uploads}`;
+      option.textContent = item.kind === 'generated' ? `Generated scan ${++generated}` : item.kind === 'addresses' ? `Public-address batch ${++addresses}` : `Uploaded file ${++uploads}`;
       option.disabled = state.uploading; select.appendChild(option);
     });
     if (state.uploading || !state.jobId) {

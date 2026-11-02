@@ -313,7 +313,7 @@ test('public-address CSV uploads through the private dashboard, shows live Bitco
     const live = await (await fetch(`${origin}api/background/jobs/${id}/dashboard`, { headers })).json();
     assert.equal(live.status, 'scanning'); assert.equal(live.total, 6); assert.equal(live.wallets, 2);
     assert.ok(live.assetCount >= 2); assert.equal(JSON.stringify(live).includes(secret), false);
-    assert.match(w.document.getElementById('portfolio-source').selectedOptions[0].textContent, /Public-address CSV/i);
+    assert.match(w.document.getElementById('portfolio-source').selectedOptions[0].textContent, /Public-address batch/i);
     w.document.querySelector('#asset-list .asset-open').click();
     assert.equal(w.document.getElementById('asset-export-phrase-block').hidden, true);
     assert.match(w.document.getElementById('asset-export-note').textContent, /public addresses only/i);
@@ -324,7 +324,7 @@ test('public-address CSV uploads through the private dashboard, shows live Bitco
     reopened = page(origin, saved); const v = reopened.window;
     await until(() => v.document.getElementById('asset-list').textContent.includes('Live Bitcoin'));
     assert.match(v.document.getElementById('asset-list').textContent, /Live Ether/);
-    assert.match(v.document.getElementById('portfolio-source').selectedOptions[0].textContent, /Public-address CSV/i);
+    assert.match(v.document.getElementById('portfolio-source').selectedOptions[0].textContent, /Public-address batch/i);
     assert.equal(v.document.getElementById('wallet-count').textContent, '2');
   } finally {
     first?.window.close(); reopened?.window.close();

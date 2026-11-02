@@ -5,7 +5,6 @@ COPY package.json package-lock.json ./
 RUN npm ci
 COPY vercel.json server.js ./
 COPY src ./src
-COPY scripts ./scripts
 COPY api ./api
 COPY lib ./lib
 COPY public ./public
@@ -23,7 +22,7 @@ COPY --chown=node:node lib ./lib
 # The background importer derives addresses with ethers on the server.
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --chown=node:node public ./public
-COPY --from=build --chown=node:node /app/public/wallet-bundle.js /app/public/derive-bundle.js /app/public/offline-private-key-converter.html ./public/
+COPY --from=build --chown=node:node /app/public/wallet-bundle.js /app/public/derive-bundle.js ./public/
 USER node
 EXPOSE 3000
 CMD ["node", "server.js"]
