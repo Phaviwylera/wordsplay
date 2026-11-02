@@ -1,6 +1,5 @@
 node_modules/
 public/wallet-bundle.js
 public/derive-bundle.js
-public/offline-private-key-converter.html
 .env
 .env.*
