@@ -258,12 +258,13 @@ function renderFile() {
   const percentage = state.uploading ? state.uploadPercent : data?.total ? Math.round(data.completed / data.total * 100) : data?.status === 'finished' ? 100 : 0;
   $('#progress-text').textContent = state.uploading ? 'Uploading file to EC2…' : !data ? (state.error ? 'Server connection unavailable' : 'Connecting to EC2…') : data.status === 'importing' ? 'Processing file on EC2…' : data.status === 'scanning' ? (data.kind === 'generated' ? (data.generationActive ? 'Generating and scanning on EC2…' : 'Finishing queued scans on EC2…') : 'Checking balances on EC2…') : data.status === 'failed' ? 'Server processing failed' : data.incomplete ? 'Server scan finished with incomplete checks' : 'Server scan complete';
   $('#progress-percent').textContent = `${percentage}%`; $('#progress-bar').value = percentage;
-  $('#progress-detail').textContent = state.uploading ? 'Keep this laptop on until the upload is confirmed. EC2 continues scanning after confirmation.' : data ? `${data.wallets.toLocaleString()} wallets · ${data.completed.toLocaleString()} of ${data.total.toLocaleString()} network checks · ${data.incomplete.toLocaleString()} incomplete${data.kind === 'addresses' ? ` · ${(data.lines || 0).toLocaleString()} CSV rows` : ''}${data.invalid ? ` · ${data.invalid.toLocaleString()} ${data.kind === 'addresses' ? 'invalid address cells' : 'invalid lines'}` : ''}${data.kind === 'generated' ? (data.generationActive ? ' · generation target up to 100 per second; rate depends on scanning capacity' : data.generationReason ? ` · ${data.generationReason}` : '') : ''}` : state.hasJob ? 'Job credentials are stored in this browser for reconnection.' : 'No file is being processed locally.';
+  $('#progress-detail').textContent = state.uploading ? 'Keep this laptop on until the upload is confirmed. EC2 continues scanning after confirmation.' : data ? `${data.wallets.toLocaleString()} wallets · ${data.completed.toLocaleString()} of ${data.total.toLocaleString()} network checks · ${data.incomplete.toLocaleString()} incomplete${data.kind === 'addresses' ? ` · ${(data.lines || 0).toLocaleString()} CSV rows` : ''}${data.invalid ? ` · ${data.invalid.toLocaleString()} ${data.kind === 'addresses' ? 'invalid address cells' : 'invalid lines'}` : ''}${data.kind === 'generated' ? `${data.generationActive ? ' · generation target up to 100 per second; rate depends on scanning capacity' : ''}${data.generationReason ? ` · ${data.generationReason}` : ''}${data.incomplete > 0 && data.status !== 'finished' ? ' · Incomplete checks are not automatically retried; stop generation and let queued scans finish, then retry them.' : ''}` : ''}` : state.hasJob ? 'Job credentials are stored in this browser for reconnection.' : 'No file is being processed locally.';
   const error = state.error || (data?.status === 'failed' ? (data.error || 'Server processing failed.') : '') || (state.storageWarning ? 'Browser storage failed. Keep this page open or access to this job may be lost.' : '');
   $('#scan-errors').hidden = !error; $('#scan-errors').textContent = error;
   $('#scan-status').hidden = !error; $('#scan-status').textContent = error;
   $('#retry-failed').hidden = !(data?.status === 'finished' && data.incomplete > 0); $('#retry-failed').disabled = false; $('#retry-failed').textContent = 'Retry incomplete checks';
   $('#stop-generation').hidden = !(data?.kind === 'generated' && data.generationActive);
+  $('#resume-generation').hidden = !(data?.kind === 'generated' && data.status === 'finished' && !data.generationActive);
   $('#file-refresh-bnb').hidden = !(data?.status === 'finished' && totalWallets > 0 && data.hasBnbChecks !== false);
   $('#file-remove').hidden = !data || !['finished', 'failed'].includes(data.status);
 }
@@ -296,6 +297,7 @@ function render() {
   $('#wallet-description').textContent = 'Your tracked addresses.';
   $('#file-remove').hidden = true;
   $('#stop-generation').hidden = true;
+  $('#resume-generation').hidden = true;
   $('#file-refresh-bnb').hidden = true;
   $('#remove-all').title = 'Remove all watch-list entries';
   $('#retry-failed').textContent = 'Retry failed checks';
@@ -938,6 +940,7 @@ $('#asset-next').addEventListener('click', () => { if (viewMode === 'file') { fi
 $('#refresh').addEventListener('click', () => { window.pricing?.refresh(); if (viewMode === 'file') fileScan?.refresh(); else scan(); });
 $('#retry-failed').addEventListener('click', () => { if (viewMode === 'file') fileScan?.retry(); else scan(true); });
 $('#stop-generation').addEventListener('click', () => fileScan?.stopGeneration());
+$('#resume-generation').addEventListener('click', () => fileScan?.resumeGeneration());
 $('#file-refresh-bnb').addEventListener('click', () => fileScan?.refreshBnb());
 $('#file-remove').addEventListener('click', async () => { if (await fileScan?.remove()) { fileAssetPage = 0; fileWalletPage = 0; $('#network-filter').value = 'all'; viewMode = fileScan.snapshot().hasJob ? 'file' : 'watch'; if (viewMode === 'watch' && !watchInitialized) scan('incremental'); else render(); } });
 $('#today').textContent = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date());

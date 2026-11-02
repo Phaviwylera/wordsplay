@@ -192,6 +192,23 @@ test('EC2 generation requires loopback, a same-origin bounded empty request and 
     assert.equal(status.status, 'finished'); assert.equal(status.kind, 'generated');
     assert.ok(status.wallets >= 10); assert.equal(status.hiddenWallets, status.wallets);
     assert.equal(status.retainsPhrases, false);
+    const resume = `/api/background/jobs/${id}/resume-generation`;
+    assert.equal((await request(port, 'POST', resume, { ...headers, origin: 'http://evil.example', authorization: `Bearer ${token}` })).status, 403);
+    assert.equal((await request(port, 'POST', resume, { ...headers, authorization: `Bearer ${'0'.repeat(64)}` })).status, 404);
+    assert.equal((await request(port, 'POST', resume, { ...headers, authorization: `Bearer ${token}` })).status, 202);
+    for (let i = 0; i < 150; i++) {
+      status = (await request(port, 'GET', `/api/background/jobs/${id}`, { host, authorization: `Bearer ${token}` })).body;
+      if (status.generationActive && status.wallets > 10) break;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.equal(status.status, 'scanning'); assert.equal(status.generationActive, true); assert.ok(status.wallets > 10);
+    assert.equal((await request(port, 'POST', stop, { ...headers, authorization: `Bearer ${token}` })).status, 202);
+    for (let i = 0; i < 150; i++) {
+      status = (await request(port, 'GET', `/api/background/jobs/${id}`, { host, authorization: `Bearer ${token}` })).body;
+      if (status.status === 'finished') break;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.equal(status.status, 'finished');
     const dashboard = await request(port, 'GET', `/api/background/jobs/${id}/dashboard`, { host, authorization: `Bearer ${token}` });
     assert.equal(dashboard.status, 200); assert.equal(dashboard.body.assets.length, 0);
     assert.equal(dashboard.body.recentAssets.length, 0);
