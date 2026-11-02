@@ -166,10 +166,17 @@ const server = http.createServer(async (req, res) => {
     res.json = (data) => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(data)); };
     return url.pathname === '/api/scan' ? handler(req, res) : marketHandler(req, res);
   }
-  const files = { '/': ['index.html', 'text/html'], '/style.css': ['style.css', 'text/css'], '/app.js': ['app.js', 'text/javascript'], '/pricing.js': ['pricing.js', 'text/javascript'], '/background.js': ['background.js', 'text/javascript'], '/derive-bundle.js': ['derive-bundle.js', 'text/javascript'], '/direct-scan.js': ['direct-scan.js', 'text/javascript'], '/wordlist': ['wordlist.html', 'text/html'], '/wordlist.js': ['wordlist.js', 'text/javascript'], '/bip39-english.txt': ['bip39-english.txt', 'text/plain'], '/bip39-wordlist-LICENSE.txt': ['bip39-wordlist-LICENSE.txt', 'text/plain'], '/wallet': ['wallet.html', 'text/html'], '/wallet-bundle.js': ['wallet-bundle.js', 'text/javascript'] };
+  const files = { '/': ['index.html', 'text/html'], '/style.css': ['style.css', 'text/css'], '/app.js': ['app.js', 'text/javascript'], '/pricing.js': ['pricing.js', 'text/javascript'], '/background.js': ['background.js', 'text/javascript'], '/derive-bundle.js': ['derive-bundle.js', 'text/javascript'], '/direct-scan.js': ['direct-scan.js', 'text/javascript'], '/wordlist': ['wordlist.html', 'text/html'], '/wordlist.js': ['wordlist.js', 'text/javascript'], '/bip39-english.txt': ['bip39-english.txt', 'text/plain'], '/bip39-wordlist-LICENSE.txt': ['bip39-wordlist-LICENSE.txt', 'text/plain'], '/wallet': ['wallet.html', 'text/html'], '/wallet-bundle.js': ['wallet-bundle.js', 'text/javascript'], '/offline-private-key-converter': ['offline-private-key-converter.html', 'text/html'], '/offline-private-key-converter.html': ['offline-private-key-converter.html', 'text/html'] };
   const file = files[url.pathname];
   if (!file) { res.writeHead(404); return res.end('Not found'); }
   const headers = { 'Content-Type': `${file[1]}; charset=utf-8` };
+  if (url.pathname === '/offline-private-key-converter' || url.pathname === '/offline-private-key-converter.html') {
+    headers['X-Content-Type-Options'] = 'nosniff';
+    headers['Cache-Control'] = 'no-store';
+    headers['Content-Disposition'] = 'attachment; filename="walleto-offline-private-key-converter.html"';
+    headers['Content-Security-Policy'] = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; img-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+    headers['Referrer-Policy'] = 'no-referrer';
+  }
   if (url.pathname === '/') {
     headers['Cache-Control'] = 'no-store';
     headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://eth.blockscout.com https://base.blockscout.com https://arbitrum.blockscout.com https://optimism.blockscout.com https://ethereum-rpc.publicnode.com https://base-rpc.publicnode.com https://arbitrum-one-rpc.publicnode.com https://optimism-rpc.publicnode.com https://mempool.space https://bsc-rpc.publicnode.com; object-src 'none'; base-uri 'none'; form-action 'self'";
