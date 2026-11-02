@@ -662,14 +662,70 @@ test('automatic generation applies backlog, provider-error and free-disk safegua
     for (let i = 0; i < 200 && jobs.status(first.id, first.token).wallets <= 3; i++) await wait();
     assert.ok(jobs.status(first.id, first.token).wallets > 3, 'generation resumes when backlog drains');
     jobs.stopGeneration(first.id, first.token); await finished(jobs, first.id, first.token); jobs.close();
-    jobs = createBackgroundJobs(dir, { generationBatchSize: 1, generationMaxIncomplete: 1, scan: async () => { throw new Error('offline'); } });
-    const failures = jobs.generate(); const failed = await finished(jobs, failures.id, failures.token);
-    assert.equal(failed.generationActive, false); assert.ok(failed.incomplete >= 1);
-    assert.match(failed.generationReason, /many incomplete checks/i); jobs.close();
-    jobs = createBackgroundJobs(dir, { generationDiskAvailable: () => false, scan: async () => { throw new Error('must not scan'); } });
-    const lowDisk = jobs.generate(); const stopped = await finished(jobs, lowDisk.id, lowDisk.token);
-    assert.equal(stopped.wallets, 0); assert.match(stopped.generationReason, /disk space/i);
+    jobs = createBackgroundJobs(dir, { generationBatchSize: 100, generationRate: 10000, generationMaxBacklog: 2000, generationMaxIncomplete: 1,
+      scan: async () => { throw new Error('offline'); } });
+    const failures = jobs.generate();
+    let failed;
+    for (let i = 0; i < 500 && (failed = jobs.status(failures.id, failures.token)).incomplete <= 500; i++) await wait();
+    assert.ok(failed.incomplete > 500, 'incomplete checks do not stop generation');
+    assert.equal(failed.generationActive, true);
+    assert.equal(jobs.stopGeneration(failures.id, failures.token), true);
+    failed = await finished(jobs, failures.id, failures.token);
+    assert.equal(failed.generationActive, false); assert.ok(failed.incomplete > 500);
+    assert.match(failed.generationReason, /stopped by user/i); jobs.close();
+    let diskAvailable = false;
+    jobs = createBackgroundJobs(dir, { generationDiskAvailable: () => diskAvailable, generationDiskCheckInterval: 20,
+      scan: async (owner, network) => fakeScan(owner, network) });
+    const lowDisk = jobs.generate();
+    for (let i = 0; i < 100 && !jobs.status(lowDisk.id, lowDisk.token).generationReason; i++) await wait();
+    const paused = jobs.status(lowDisk.id, lowDisk.token);
+    assert.equal(paused.status, 'scanning'); assert.equal(paused.generationActive, true);
+    assert.match(paused.generationReason, /paused.*disk space.*resume/i);
+    diskAvailable = true;
+    for (let i = 0; i < 100 && (jobs.status(lowDisk.id, lowDisk.token).wallets === 0 || jobs.status(lowDisk.id, lowDisk.token).generationReason); i++) await wait();
+    assert.ok(jobs.status(lowDisk.id, lowDisk.token).wallets > 0, 'generation resumes when free space recovers');
+    assert.equal(jobs.status(lowDisk.id, lowDisk.token).generationReason, null);
+    assert.equal(jobs.stopGeneration(lowDisk.id, lowDisk.token), true);
+    await finished(jobs, lowDisk.id, lowDisk.token);
   } finally { release(); await wait(); jobs.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a finished generator resumes the same job and safely renews a pruned phrase key', { timeout: 20000 }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-generated-resume-'));
+  let jobs = createBackgroundJobs(dir, { generationBatchSize: 2, scan: async (owner, network) =>
+    completeResult(network, [{ type: 'native', symbol: network === 'bnb' ? 'BNB' : 'ETH', rawBalance: '0', decimals: 18, price: null }]) });
+  let key;
+  try {
+    const link = jobs.generate();
+    for (let i = 0; i < 200 && jobs.status(link.id, link.token).wallets === 0; i++) await wait();
+    assert.ok(jobs.status(link.id, link.token).wallets > 0);
+    assert.equal(jobs.stopGeneration(link.id, link.token), true);
+    const firstFinish = await finished(jobs, link.id, link.token);
+    const before = firstFinish.wallets;
+    assert.equal(firstFinish.status, 'finished'); assert.equal(firstFinish.retainsPhrases, false);
+    assert.equal(jobs.resumeGeneration(link.id, link.token), true);
+    assert.equal(jobs.status(link.id, link.token).generationActive, true);
+    for (let i = 0; i < 200 && jobs.status(link.id, link.token).wallets <= before; i++) await wait();
+    assert.ok(jobs.status(link.id, link.token).wallets > before);
+    assert.equal(jobs.stopGeneration(link.id, link.token), true);
+    const resumedFinish = await finished(jobs, link.id, link.token);
+    assert.equal(resumedFinish.status, 'finished'); assert.ok(resumedFinish.wallets > before);
+    jobs.close();
+
+    // Existing encrypted phrase rows must never be orphaned by generating a
+    // replacement key when the stored key is missing/corrupt.
+    jobs = createBackgroundJobs(dir, { generationBatchSize: 1, scan: fakeScan });
+    const positive = jobs.generate();
+    for (let i = 0; i < 200 && jobs.status(positive.id, positive.token).wallets === 0; i++) await wait();
+    assert.equal(jobs.stopGeneration(positive.id, positive.token), true);
+    await finished(jobs, positive.id, positive.token);
+    const db = new DatabaseSync(path.join(dir, 'jobs.sqlite'));
+    key = db.prepare('SELECT phrase_key FROM jobs WHERE id=?').get(positive.id).phrase_key;
+    assert.ok(key); assert.ok(db.prepare('SELECT 1 FROM retained_phrases WHERE job=? LIMIT 1').get(positive.id));
+    db.prepare('UPDATE jobs SET phrase_key = NULL WHERE id = ?').run(positive.id); db.close();
+    assert.equal(jobs.resumeGeneration(positive.id, positive.token), false);
+    assert.equal(jobs.status(positive.id, positive.token).status, 'finished');
+  } finally { jobs.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('a new positive remains visible during a large scan even beyond the first asset page and after restart', { timeout: 20000 }, async () => {

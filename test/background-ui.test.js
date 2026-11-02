@@ -22,7 +22,7 @@ async function until(check, timeout = 5000) {
   const start = Date.now();
   while (!check()) { if (Date.now() - start > timeout) throw new Error('File dashboard UI did not finish'); await wait(); }
 }
-function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets = null, assets, recentAssets = [], wallets, hiddenAddresses, restoreFails = false, incomplete = 0, getPhrase, dashboardHook, watchFetch, recover, generate, jobKind, hasBnbChecks, generationActive = false, market = { currency: 'INR', usdToInr: 83, prices: {} }, knownValue, jobStatus = 'finished', timers } = {}) {
+function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets = null, assets, recentAssets = [], wallets, hiddenAddresses, restoreFails = false, incomplete = 0, getPhrase, dashboardHook, watchFetch, recover, generate, jobKind, hasBnbChecks, generationActive = false, generationReason, market = { currency: 'INR', usdToInr: 83, prices: {} }, knownValue, jobStatus = 'finished', timers } = {}) {
   const dom = new JSDOM(html, { url, runScripts: 'outside-only' });
   const w = dom.window; const $ = id => w.document.getElementById(id);
   if (timers) { const original = w.setTimeout.bind(w); w.setTimeout = (fn, delay, ...args) => { timers.push(delay); return original(fn, delay, ...args); }; }
@@ -64,7 +64,7 @@ function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets 
       const visibleWallets = hidden ? allWallets.filter(row => !hidden.has(row.address)) : allWallets;
       const hiddenCount = hidden?.size || 0;
       return { ok: true, json: async () => ({
-        id: requestedId, status: jobStatus, ...(jobKind ? { kind: jobKind, generationActive, generationTarget: 100 } : {}), ...(hasBnbChecks === undefined ? {} : { hasBnbChecks }), wallets: allWallets.length, ...(hidden ? { hiddenWallets: hiddenCount, visibleWallets: visibleWallets.length } : {}), total: allWallets.length * 5, completed: allWallets.length * 5,
+        id: requestedId, status: jobStatus, ...(jobKind ? { kind: jobKind, generationActive, generationReason, generationTarget: 100 } : {}), ...(hasBnbChecks === undefined ? {} : { hasBnbChecks }), wallets: allWallets.length, ...(hidden ? { hiddenWallets: hiddenCount, visibleWallets: visibleWallets.length } : {}), total: allWallets.length * 5, completed: allWallets.length * 5,
         invalid: 0, incomplete: currentIncomplete, phraseMatching: true, retainsPhrases: true, market,
         knownValue: knownValue ?? allAssets.length * 2, unpriced: 0, assetCount: allAssets.length, filteredAssetCount: filtered.length,
         assetOffset, walletOffset, network: filter, assets: filtered.slice(assetOffset, assetOffset + 100).map(row => ({ phraseAvailable: true, ...row })),
@@ -80,6 +80,7 @@ function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets 
       const restored = hidden.size; hidden.clear(); return { ok: true, json: async () => ({ restored }) };
     }
     if (target.endsWith('/stop-generation')) { generationActive = false; return { ok: true, json: async () => ({ ok: true }) }; }
+    if (target.endsWith('/resume-generation')) { generationActive = true; jobStatus = 'scanning'; return { ok: true, json: async () => ({ ok: true }) }; }
     if (target.endsWith('/retry') || target.endsWith('/refresh-bnb')) { currentIncomplete = 0; return { ok: true, json: async () => ({ ok: true }) }; }
     if (options.method === 'DELETE') return { ok: true, json: async () => ({ ok: true }) };
     throw new Error(`Unexpected request: ${target}`);
@@ -665,17 +666,32 @@ test('reconnecting a generated job preserves its source label and other browser 
 });
 
 test('the generated job provides an authenticated stop control and continues the queued checks', async () => {
-  const ctx = setup({ savedJob: true, jobStatus: 'scanning', jobKind: 'generated', generationActive: true });
+  const ctx = setup({ savedJob: true, jobStatus: 'scanning', jobKind: 'generated', generationActive: true, incomplete: 2, generationReason: 'Generation is paused to protect free disk space and will resume when space is available.' });
   const { dom, $, requests } = ctx;
   try {
     await until(() => !$('stop-generation').hidden);
     assert.match($('progress-text').textContent, /Generating and scanning on EC2/);
     assert.match($('progress-detail').textContent, /up to 100 per second/);
+    assert.match($('progress-detail').textContent, /paused to protect free disk space/i);
+    assert.match($('progress-detail').textContent, /not automatically retried/i);
     $('stop-generation').click();
     await until(() => $('stop-generation').hidden && $('progress-text').textContent.includes('Finishing queued scans'));
     const stop = requests.find(item => item.url.endsWith('/stop-generation'));
     assert.equal(stop.options.method, 'POST'); assert.equal(stop.options.headers.Authorization, `Bearer ${token}`);
     assert.match($('import-status').textContent, /stopped.*finish the already queued scans/i);
+  } finally { dom.window.close(); }
+});
+
+test('a finished generated job can resume in place from its portfolio controls', async () => {
+  const ctx = setup({ savedJob: true, jobStatus: 'finished', jobKind: 'generated', generationActive: false });
+  const { dom, $, requests } = ctx;
+  try {
+    await until(() => !$('resume-generation').hidden);
+    $('resume-generation').click();
+    await until(() => $('resume-generation').hidden && !$('stop-generation').hidden);
+    const resume = requests.find(item => item.url.endsWith('/resume-generation'));
+    assert.equal(resume.options.method, 'POST'); assert.equal(resume.options.headers.Authorization, `Bearer ${token}`);
+    assert.match($('import-status').textContent, /resumed in the existing server job/i);
   } finally { dom.window.close(); }
 });
 

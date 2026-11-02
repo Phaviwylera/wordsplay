@@ -133,6 +133,17 @@
     } catch (_) { importStatus('Could not stop generation. Reconnect the private EC2 tunnel and try again.', true); }
     finally { button.disabled = false; }
   }
+  async function resumeGeneration() {
+    if (!job || state.data?.kind !== 'generated' || state.data.status !== 'finished' || state.data.generationActive) return;
+    const current = job; const button = $('resume-generation'); button.disabled = true;
+    try {
+      await request('/resume-generation', 'POST');
+      if (current !== job) return;
+      importStatus('Automatic generation resumed in the existing server job.');
+      await refresh();
+    } catch (_) { importStatus('Could not resume this generated job. Check its status and reconnect the private EC2 tunnel.', true); }
+    finally { button.disabled = false; }
+  }
   async function retry() {
     if (!job || !state.data || state.data.status !== 'finished' || !state.data.incomplete) return;
     try { await request('/retry', 'POST'); importStatus('Retrying incomplete checks on the server.'); refresh(); }
@@ -312,6 +323,6 @@
   window.addEventListener('beforeunload', event => { if (uploading || generating) { event.preventDefault(); event.returnValue = ''; } });
   window.addEventListener('pagehide', () => { $('file-recovery-code').value = ''; requestVersion++; clearTimeout(timer); });
   window.addEventListener('pageshow', event => { if (event.persisted && job) refresh(); });
-  window.fileScan = { snapshot, setView, select, refresh, restoreHidden, refreshBnb, retry, stopGeneration, remove, phrase };
+  window.fileScan = { snapshot, setView, select, refresh, restoreHidden, refreshBnb, retry, stopGeneration, resumeGeneration, remove, phrase };
   if (job) refresh();
 })();

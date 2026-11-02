@@ -92,7 +92,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
     }
-    const match = url.pathname.match(/^\/api\/background\/jobs\/([a-f0-9]{64})(?:\/(results|dashboard|matches|phrase|retry|refresh-bnb|restore-hidden|stop-generation))?$/);
+    const match = url.pathname.match(/^\/api\/background\/jobs\/([a-f0-9]{64})(?:\/(results|dashboard|matches|phrase|retry|refresh-bnb|restore-hidden|stop-generation|resume-generation))?$/);
     if (req.method === 'POST' && url.pathname === '/api/background/jobs') {
       if (req.headers.origin !== `http://${req.headers.host}` || req.headers['content-type'] !== 'application/octet-stream') return send(403, { error: 'Invalid upload origin.' });
       try { const result = await jobs.receive(req, { retainPhrases: true }); return send(202, result); }
@@ -118,6 +118,9 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && action === 'stop-generation' && req.headers.origin === `http://${req.headers.host}`) {
       return jobs.stopGeneration(id, token) ? send(202, { ok: true }) : send(409, { error: 'Automatic generation is not running.' });
+    }
+    if (req.method === 'POST' && action === 'resume-generation' && req.headers.origin === `http://${req.headers.host}`) {
+      return jobs.resumeGeneration(id, token) ? send(202, { ok: true }) : send(409, { error: 'This generated job cannot be resumed yet. It must be finished, retain its phrase data safely, and no other generator may be active.' });
     }
     if (req.method === 'POST' && action === 'retry' && req.headers.origin === `http://${req.headers.host}`) {
       return jobs.retry(id, token) ? send(202, { ok: true }) : send(409, { error: 'Job cannot be retried yet.' });
