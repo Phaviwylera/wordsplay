@@ -168,10 +168,10 @@
   }
   async function refreshBnb() {
     if (refreshingBnb || !job || state.data?.status !== 'finished' || !state.data.wallets) return;
-    if (!confirm(`Recheck BNB and BUSD for all ${state.data.wallets.toLocaleString()} wallets on EC2? This can take time. Previous balances remain visible while updating.`)) return;
+    if (!confirm(`Recheck BNB, BUSD and USDT for all ${state.data.wallets.toLocaleString()} wallets on EC2? This can take time. Previous balances remain visible while updating.`)) return;
     refreshingBnb = true;
-    try { await request('/refresh-bnb', 'POST'); importStatus('Rechecking BNB and BUSD on EC2. The server continues if this laptop is off.'); await refresh(); }
-    catch (_) { importStatus('Could not start the BNB and BUSD refresh. Reconnect the SSH tunnel and try again.', true); }
+    try { await request('/refresh-bnb', 'POST'); importStatus('Rechecking BNB, BUSD and USDT on EC2. The server continues if this laptop is off.'); await refresh(); }
+    catch (_) { importStatus('Could not start the BNB, BUSD and USDT refresh. Reconnect the SSH tunnel and try again.', true); }
     finally { refreshingBnb = false; }
   }
   async function remove() {

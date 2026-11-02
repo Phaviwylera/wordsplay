@@ -3,10 +3,10 @@ const assert = require('node:assert/strict');
 const { readWorkerLimits } = require('../lib/worker-config');
 
 test('EC2 worker limits keep existing conservative defaults unless explicitly configured', () => {
-  assert.deepEqual(readWorkerLimits({}), { concurrency: 12, perNetworkConcurrency: 3 });
+  assert.deepEqual(readWorkerLimits({}), { concurrency: 24, perNetworkConcurrency: 4 });
   assert.deepEqual(readWorkerLimits({ WALLETO_SCAN_CONCURRENCY: '20', WALLETO_SCAN_PER_NETWORK: '4' }), { concurrency: 20, perNetworkConcurrency: 4 });
   assert.deepEqual(readWorkerLimits({ WALLETO_SCAN_CONCURRENCY: '1', WALLETO_SCAN_PER_NETWORK: '8' }), { concurrency: 1, perNetworkConcurrency: 8 });
-  assert.deepEqual(readWorkerLimits({ WALLETO_SCAN_CONCURRENCY: '40' }), { concurrency: 40, perNetworkConcurrency: 3 });
+  assert.deepEqual(readWorkerLimits({ WALLETO_SCAN_CONCURRENCY: '40' }), { concurrency: 40, perNetworkConcurrency: 4 });
 });
 
 test('invalid or excessive worker limits fail closed rather than becoming unbounded', () => {

@@ -51,8 +51,8 @@ let fileWalletPage = 0;
 let viewMode = fileScan?.snapshot().hasJob ? 'file' : 'watch';
 let watchInitialized = false;
 const PAGE_SIZE = 100;
-const SCAN_CONCURRENCY = 15;
-const SCANS_PER_NETWORK = 3;
+const SCAN_CONCURRENCY = 20;
+const SCANS_PER_NETWORK = 4;
 // Reuse one limiter across refreshes: aborted requests that are still winding
 // down cannot briefly multiply the provider load when the watch list changes.
 const watchQueue = window.createScanQueue({ concurrency: SCAN_CONCURRENCY, perNetwork: SCANS_PER_NETWORK });
@@ -360,7 +360,7 @@ function render() {
       const reasons = counts[check.network] ||= {};
       reasons[check.reason] = (reasons[check.reason] || 0) + 1;
     }
-    const explanations = { limited: 'Rate limiting detected', invalid: 'Invalid or incomplete indexer data', unavailable: 'Indexer or network unavailable', partial: 'Native balance only; token and NFT data unavailable', busd: 'BUSD check unavailable; retry', native: 'Native balance unavailable; token balances may be shown' };
+    const explanations = { limited: 'Rate limiting detected', invalid: 'Invalid or incomplete indexer data', unavailable: 'Indexer or network unavailable', partial: 'Native balance only; token and NFT data unavailable', busd: 'BUSD/USDT checks unavailable; retry', native: 'Native balance unavailable; token balances may be shown' };
     const details = Object.entries(counts).map(([network, reasons]) => {
       const count = Object.values(reasons).reduce((sum, value) => sum + value, 0);
       const breakdown = Object.entries(reasons).map(([reason, number]) => `${explanations[reason]} (${number})`).join('; ');

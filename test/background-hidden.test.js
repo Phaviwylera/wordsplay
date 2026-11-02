@@ -22,7 +22,8 @@ const owners = phrases.map(value => Wallet.fromPhrase(value).address);
 const networks = ['ethereum', 'base', 'arbitrum', 'optimism', 'bnb'];
 const native = { type: 'native', name: 'Native', symbol: 'ETH', rawBalance: '0', decimals: 18, price: null };
 const busd = { type: 'BEP-20', name: 'BUSD', symbol: 'BUSD', contract: '0xe9e7cea3dedca5984780bafc599bd69add087d56', rawBalance: '0', decimals: 18, price: null };
-const complete = (network, assets = [native]) => network === 'bnb' ? { coverage: 'bnb-and-busd', assets: [...assets, busd] } : { assets };
+const usdt = { type: 'BEP-20', name: 'USDT', symbol: 'USDT', contract: '0x55d398326f99059ff775485246999027b3197955', rawBalance: '0', decimals: 18, price: null };
+const complete = (network, assets = [native]) => network === 'bnb' ? { coverage: 'bnb-and-stables', assets: [...assets, busd, usdt] } : { assets };
 const wait = () => new Promise(resolve => setTimeout(resolve, 20));
 async function until(check, timeout = 10000) {
   const start = Date.now();

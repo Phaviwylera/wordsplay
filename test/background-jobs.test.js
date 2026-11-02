@@ -9,7 +9,7 @@ const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 const { createBackgroundJobs } = require('../lib/background-jobs');
 const { Wallet, Mnemonic } = require('ethers');
-const { BUSD_BSC } = require('../lib/prices');
+const { BUSD_BSC, USDT_BSC } = require('../lib/prices');
 
 // Public test phrase. Never fund this account.
 const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
@@ -395,7 +395,7 @@ test('BUSD-only matches retain their phrase; failed refresh keeps the last balan
   } finally { jobs.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('older BNB checks migrate to retryable BUSD checks without pretending pruned phrases can be recovered', async () => {
+test('older BNB checks migrate to retryable USDT checks without pretending pruned phrases can be recovered', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-busd-migration-'));
   const phrase2 = 'test test test test test test test test test test test junk';
   const a = Wallet.fromPhrase(phrase).address; const b = Wallet.fromPhrase(phrase2).address;
@@ -408,27 +408,28 @@ test('older BNB checks migrate to retryable BUSD checks without pretending prune
     assert.equal(jobs.phrase(id, token, a), phrase); assert.equal(jobs.phrase(id, token, b), null);
     jobs.close();
     const db = new DatabaseSync(path.join(dir, 'jobs.sqlite'));
-    db.prepare("UPDATE checks SET assets = json_array(json_extract(assets, '$[0]')) WHERE network = 'bnb'").run();
-    db.prepare('DELETE FROM background_migrations WHERE name = ?').run('bnb-busd-coverage-v1'); db.close();
+    db.prepare("UPDATE checks SET assets = json_array(json_extract(assets, '$[0]'), json_extract(assets, '$[1]')) WHERE network = 'bnb'").run();
+    db.prepare('DELETE FROM background_migrations WHERE name = ?').run('bnb-usdt-coverage-v1'); db.close();
     const calls = [];
     jobs = createBackgroundJobs(dir, { scan: async (address, network) => {
       calls.push({ address, network });
-      return { coverage: 'bnb-and-busd', assets: [native('0'), { type: 'BEP-20', name: 'Binance-Peg BUSD', symbol: 'BUSD', contract: BUSD_BSC, rawBalance: '1000000000000000000', decimals: 18, price: null }] };
+      return { coverage: 'bnb-and-stables', assets: [native('0'), { type: 'BEP-20', name: 'Binance-Peg BUSD', symbol: 'BUSD', contract: BUSD_BSC, rawBalance: '1000000000000000000', decimals: 18, price: null }, { type: 'BEP-20', name: 'Binance-Peg BSC-USD', symbol: 'USDT', contract: USDT_BSC, rawBalance: '1000000000000000000', decimals: 18, price: null }] };
     } });
     assert.equal(jobs.status(id, token).incomplete, 2);
     const before = jobs.results(id, token).checks.filter(c => c.network === 'bnb');
-    assert.ok(before.every(c => c.status === 'partial' && /BUSD was not checked/.test(c.reason)));
+    assert.ok(before.every(c => c.status === 'partial' && /USDT was not checked/.test(c.reason)));
     assert.equal(jobs.retry(id, token), true); assert.equal((await finished(jobs, id, token)).incomplete, 0);
     assert.equal(calls.length, 2); assert.ok(calls.every(c => c.network === 'bnb'));
     const page = jobs.dashboard(id, token, { prices: { busd: 0.95 } });
     assert.equal(page.assets.filter(row => row.asset.symbol === 'BUSD').length, 2);
+    assert.equal(page.assets.filter(row => row.asset.symbol === 'USDT').length, 2);
     assert.equal(page.assets.find(row => row.address === a && row.asset.symbol === 'BUSD').phraseAvailable, true);
     assert.equal(page.assets.find(row => row.address === b && row.asset.symbol === 'BUSD').phraseAvailable, false);
     assert.equal(jobs.phrase(id, token, a), phrase); assert.equal(jobs.phrase(id, token, b), null);
   } finally { jobs.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('server totals price BNB and canonical BUSD across all pages, not just visible rows', async () => {
+test('server totals price BNB and canonical BUSD and USDT across all pages, not just visible rows', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-busd-pages-'));
   const jobs = createBackgroundJobs(dir, { scan: fakeScan });
   try {
@@ -440,6 +441,7 @@ test('server totals price BNB and canonical BUSD across all pages, not just visi
     const assets = JSON.stringify([
       { type: 'native', symbol: 'BNB', rawBalance: '1000000000000000000', decimals: 18, price: null },
       { type: 'BEP-20', symbol: 'BUSD', contract: BUSD_BSC, rawBalance: '2000000000000000000', decimals: 18, price: null },
+      { type: 'BEP-20', symbol: 'USDT', contract: USDT_BSC, rawBalance: '3000000000000000000', decimals: 18, price: null },
       { type: 'BEP-20', symbol: 'BUSD', contract: '0x1111111111111111111111111111111111111111', rawBalance: '1000000000000000000', decimals: 18, price: null },
     ]);
     db.exec('BEGIN');
@@ -448,12 +450,13 @@ test('server totals price BNB and canonical BUSD across all pages, not just visi
       addWallet.run(id, address); addCheck.run(id, address, assets);
     }
     db.exec('COMMIT'); db.close();
-    const page = jobs.dashboard(id, token, { prices: { bnb: 600, busd: 0.99 } });
-    assert.equal(page.assetCount, 315); assert.equal(page.assets.length, 100); assert.equal(page.unpriced, 105);
-    assert.ok(Math.abs(page.knownValue - (600 + 2 * 0.99) * 105) < 0.001);
+    const page = jobs.dashboard(id, token, { prices: { bnb: 600, busd: 0.99, usdt: 1 } });
+    assert.equal(page.assetCount, 420); assert.equal(page.assets.length, 100); assert.equal(page.unpriced, 105);
+    assert.ok(Math.abs(page.knownValue - (600 + 2 * 0.99 + 3) * 105) < 0.001);
     assert.equal(page.assets.find(row => row.asset.contract === BUSD_BSC).asset.price, 0.99);
+    assert.equal(page.assets.find(row => row.asset.contract === USDT_BSC).asset.price, 1);
     assert.equal(page.assets.find(row => row.asset.symbol === 'BUSD' && row.asset.contract !== BUSD_BSC).asset.price, null);
-    const second = jobs.dashboard(id, token, { assetOffset: 100, prices: { bnb: 600, busd: 0.99 } });
+    const second = jobs.dashboard(id, token, { assetOffset: 100, prices: { bnb: 600, busd: 0.99, usdt: 1 } });
     assert.equal(second.assets.length, 100); assert.equal(second.knownValue, page.knownValue);
   } finally { jobs.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
@@ -477,11 +480,11 @@ test('five-wallet EC2 job progresses on healthy networks while a provider is slo
     let status;
     for (let i = 0; i < 200; i++) { status = jobs.status(id, token); if (status.completed === 20) break; await wait(); }
     assert.equal(status.status, 'scanning'); assert.equal(status.completed, 20);
-    assert.equal(held.length, 3);
+    assert.equal(held.length, 4);
     let page = jobs.dashboard(id, token);
     assert.equal(page.assetCount, 20); assert.equal(page.knownValue, 40);
-    assert.ok(peak <= 12, `global peak ${peak}`);
-    assert.ok(Object.values(peaks).every(value => value <= 3), JSON.stringify(peaks));
+    assert.ok(peak <= 24, `global peak ${peak}`);
+    assert.ok(Object.values(peaks).every(value => value <= 4), JSON.stringify(peaks));
     hold = false; held.forEach(resolve => resolve());
     assert.equal((await finished(jobs, id, token)).completed, 25);
     page = jobs.dashboard(id, token);

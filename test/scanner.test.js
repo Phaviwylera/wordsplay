@@ -133,53 +133,68 @@ test('scans Bitcoin confirmed and pending amounts with exact satoshis', async ()
   }
 });
 
-test('scans native BNB and BUSD with strict responses', async () => {
-  const { BUSD_BSC } = require('../lib/prices');
+test('scans native BNB, BUSD and USDT with strict responses', async () => {
+  const { BUSD_BSC, USDT_BSC } = require('../lib/prices');
   const calls = [];
   const fetcher = async (url, options) => {
     assert.equal(url, 'https://bsc-rpc.publicnode.com');
     assert.equal(options.method, 'POST');
     const body = JSON.parse(options.body); calls.push(body);
     if (body.method === 'eth_getBalance') {
-      assert.deepEqual(body.params, [address, 'latest']);
+      assert.equal(body.id, 1); assert.deepEqual(body.params, [address, 'latest']);
       return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: '0xde0b6b3a7640000' }) };
     }
     assert.equal(body.method, 'eth_call');
-    assert.deepEqual(body.params, [{ to: BUSD_BSC, data: `0x70a08231${address.slice(2).toLowerCase().padStart(64, '0')}` }, 'latest']);
-    return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 2, result: `0x${(25n * 10n ** 18n).toString(16).padStart(64, '0')}` }) };
+    const expected = body.id === 2 ? BUSD_BSC : USDT_BSC;
+    assert.equal(body.id === 2 || body.id === 3, true);
+    assert.deepEqual(body.params, [{ to: expected, data: `0x70a08231${address.slice(2).toLowerCase().padStart(64, '0')}` }, 'latest']);
+    const amount = body.id === 2 ? 25n * 10n ** 18n : 40n * 10n ** 18n;
+    return { ok: true, json: async () => ({ jsonrpc: '2.0', id: body.id, result: `0x${amount.toString(16).padStart(64, '0')}` }) };
   };
   const bnb = await scanWallet(address, 'bnb', fetcher);
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
   assert.equal(bnb.assets[0].rawBalance, '1000000000000000000');
   assert.equal(bnb.assets[1].rawBalance, '25000000000000000000');
   assert.equal(bnb.assets[1].contract, BUSD_BSC);
   assert.equal(bnb.assets[1].decimals, 18);
-  assert.equal(bnb.coverage, 'bnb-and-busd');
+  assert.equal(bnb.assets[2].rawBalance, '40000000000000000000');
+  assert.equal(bnb.assets[2].contract, USDT_BSC);
+  assert.equal(bnb.assets[2].decimals, 18);
+  assert.equal(bnb.coverage, 'bnb-and-stables');
   const { scanDirect } = require('../public/direct-scan');
-  assert.equal((await scanDirect(address, 'bnb', fetcher)).assets[1].rawBalance, '25000000000000000000');
-  await assert.rejects(scanWallet(address, 'bnb', async () => ({ ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: 'garbage' }) })), /Invalid/);
+  assert.equal((await scanDirect(address, 'bnb', fetcher)).assets[2].rawBalance, '40000000000000000000');
+  await assert.rejects(scanWallet(address, 'bnb', async (_url, options) => {
+    const body = JSON.parse(options.body);
+    return { ok: true, json: async () => ({ jsonrpc: '2.0', id: body.id, result: 'garbage' }) };
+  }), /Invalid/);
   await assert.rejects(scanWallet(address, 'bnb', async () => ({ ok: false, status: 429 })), /429/);
 });
 
-test('BUSD zero is verified, but failed or malformed token calls remain incomplete', async () => {
-  const native = { jsonrpc: '2.0', id: 1, result: '0x0' };
-  const invalid = [
-    { jsonrpc: '2.0', id: 2, result: '0x0' }, // not ABI-encoded to 32 bytes
-    { jsonrpc: '2.0', id: 1, result: `0x${'0'.repeat(64)}` },
-    { jsonrpc: '2.0', id: 2, result: `0x${'0'.repeat(64)}`, error: { code: -32000 } },
-    { jsonrpc: '2.0', id: 2, result: `0x${'x'.repeat(64)}` }, null,
-  ];
-  const get = token => async (_url, options) => {
-    const body = JSON.parse(options.body);
-    return body.method === 'eth_getBalance' ? { ok: true, json: async () => native }
-      : token === 'offline' ? { ok: false, status: 429 } : { ok: true, json: async () => token };
-  };
-  const zero = await scanWallet(address, 'bnb', get({ jsonrpc: '2.0', id: 2, result: `0x${'0'.repeat(64)}` }));
-  assert.equal(zero.coverage, 'bnb-and-busd'); assert.equal(zero.assets[1].rawBalance, '0');
-  for (const bad of [...invalid, 'offline']) {
-    const result = await scanWallet(address, 'bnb', get(bad));
-    assert.equal(result.coverage, 'native-only'); assert.equal(result.assets.length, 1);
-    assert.match(result.reason, /BUSD.*unavailable/i);
+test('BNB stablecoin zero balances are verified, but failed or malformed token calls remain incomplete', async () => {
+  const { BUSD_BSC, USDT_BSC } = require('../lib/prices');
+  const zero = `0x${'0'.repeat(64)}`;
+  for (const scanner of [scanWallet, require('../public/direct-scan').scanDirect]) {
+    const success = async (_url, options) => {
+      const body = JSON.parse(options.body);
+      return { ok: true, json: async () => ({ jsonrpc: '2.0', id: body.id, result: body.method === 'eth_getBalance' ? '0x0' : zero }) };
+    };
+    const complete = await scanner(address, 'bnb', success);
+    assert.equal(complete.coverage, 'bnb-and-stables');
+    assert.deepEqual(complete.assets.map(asset => asset.contract), [undefined, BUSD_BSC, USDT_BSC]);
+    const invalid = async (_url, options) => {
+      const body = JSON.parse(options.body);
+      return { ok: true, json: async () => ({ jsonrpc: '2.0', id: body.id, result: body.id === 3 ? '0x0' : body.method === 'eth_getBalance' ? '0x0' : zero }) };
+    };
+    const partial = await scanner(address, 'bnb', invalid);
+    assert.equal(partial.coverage, 'native-only'); assert.equal(partial.assets.length, 1);
+    assert.ok(partial.reason.includes('BUSD/USDT'));
+    const noUsdt = async (_url, options) => {
+      const body = JSON.parse(options.body);
+      if (body.id === 3) return { ok: false, status: 503 };
+      return { ok: true, json: async () => ({ jsonrpc: '2.0', id: body.id, result: body.method === 'eth_getBalance' ? '0x0' : zero }) };
+    };
+    const missing = await scanner(address, 'bnb', noUsdt);
+    assert.equal(missing.coverage, 'native-only'); assert.equal(missing.assets.length, 1);
   }
 });
 
@@ -267,23 +282,20 @@ test('independent EVM token data survives a native indexer and RPC failure in se
   }
 });
 
-test('BNB and canonical BUSD independently survive a failure of the other component', async () => {
-  const { BUSD_BSC } = require('../lib/prices');
+test('BNB and stablecoin components remain independently retryable on partial failures', async () => {
+  const { BUSD_BSC, USDT_BSC } = require('../lib/prices');
   for (const scanner of [scanWallet, require('../public/direct-scan').scanDirect]) {
-    for (const failed of ['native', 'busd']) {
+    for (const failed of ['native', 'busd', 'usdt']) {
       const fetcher = async (_url, options) => {
         const call = JSON.parse(options.body);
-        const native = call.method === 'eth_getBalance';
-        if ((native && failed === 'native') || (!native && failed === 'busd')) return { ok: false, status: 503 };
-        return { ok: true, json: async () => native
-          ? { jsonrpc: '2.0', id: 1, result: '0xde0b6b3a7640000' }
-          : { jsonrpc: '2.0', id: 2, result: `0x${(2n * 10n ** 18n).toString(16).padStart(64, '0')}` } };
+        if ((call.id === 1 && failed === 'native') || (call.id === 2 && failed === 'busd') || (call.id === 3 && failed === 'usdt')) return { ok: false, status: 503 };
+        return { ok: true, json: async () => ({ jsonrpc: '2.0', id: call.id, result: call.id === 1 ? '0xde0b6b3a7640000' : `0x${(2n * 10n ** 18n).toString(16).padStart(64, '0')}` }) };
       };
       const result = await scanner(address, 'bnb', fetcher);
       assert.equal(result.coverage, failed === 'native' ? 'tokens-only' : 'native-only');
-      assert.deepEqual(result.components, { native: failed !== 'native', tokens: failed !== 'busd' });
-      assert.equal(result.assets.length, 1);
-      if (failed === 'native') { assert.equal(result.assets[0].contract, BUSD_BSC); assert.equal(result.assets[0].rawBalance, '2000000000000000000'); }
+      assert.deepEqual(result.components, { native: failed !== 'native', tokens: failed === 'native' });
+      assert.equal(result.assets.length, failed === 'native' ? 2 : 1);
+      if (failed === 'native') assert.deepEqual(result.assets.map(asset => asset.contract), [BUSD_BSC, USDT_BSC]);
       else assert.equal(result.assets[0].rawBalance, '1000000000000000000');
     }
     await assert.rejects(scanner(address, 'bnb', async () => ({ ok: false, status: 503 })), /503/);
