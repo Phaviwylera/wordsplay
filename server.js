@@ -67,9 +67,22 @@ const server = http.createServer(async (req, res) => {
       let input;
       try { input = JSON.parse(raw); } catch (_) { return send(400, { error: 'Invalid recovery request.' }); }
       const link = recovery.redeem(input?.code);
-      return link ? send(200, link) : send(404, { error: 'Recovery code is invalid, expired or already used.' });
+      if (!link) return send(404, { error: 'Recovery code is invalid, expired or already used.' });
+      const status = jobs.status(link.id, link.token);
+      return send(200, status?.kind === 'generated' ? { ...link, kind: 'generated' } : link);
     }
-    const match = url.pathname.match(/^\/api\/background\/jobs\/([a-f0-9]{64})(?:\/(results|dashboard|matches|phrase|retry|refresh-bnb|restore-hidden))?$/);
+    if (req.method === 'POST' && url.pathname === '/api/background/jobs/generate') {
+      if (req.headers.origin !== `http://${req.headers.host}` || req.headers['content-type'] !== 'application/json') return send(403, { error: 'Invalid generation origin.' });
+      if (Number(req.headers['content-length']) > 1024) { req.resume(); return send(413, { error: 'Generation request too large.' }); }
+      const raw = await readSmallBody(req);
+      if (raw === null) return send(413, { error: 'Generation request too large.' });
+      let input;
+      try { input = JSON.parse(raw); } catch (_) { return send(400, { error: 'Invalid generation request.' }); }
+      if (!input || Array.isArray(input) || typeof input !== 'object' || Object.keys(input).length) return send(400, { error: 'Invalid generation request.' });
+      const generated = await jobs.generate();
+      return generated ? send(202, generated) : send(409, { error: 'An automatic generator is already running.' });
+    }
+    const match = url.pathname.match(/^\/api\/background\/jobs\/([a-f0-9]{64})(?:\/(results|dashboard|matches|phrase|retry|refresh-bnb|restore-hidden|stop-generation))?$/);
     if (req.method === 'POST' && url.pathname === '/api/background/jobs') {
       if (req.headers.origin !== `http://${req.headers.host}` || req.headers['content-type'] !== 'application/octet-stream') return send(403, { error: 'Invalid upload origin.' });
       try { const result = await jobs.receive(req, { retainPhrases: true }); return send(202, result); }
@@ -92,6 +105,9 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && action === 'phrase') {
       const phrase = jobs.phrase(id, token, url.searchParams.get('address'));
       return phrase ? send(200, { phrase }) : send(404, { error: 'No retained phrase for a positive-balance wallet.' });
+    }
+    if (req.method === 'POST' && action === 'stop-generation' && req.headers.origin === `http://${req.headers.host}`) {
+      return jobs.stopGeneration(id, token) ? send(202, { ok: true }) : send(409, { error: 'Automatic generation is not running.' });
     }
     if (req.method === 'POST' && action === 'retry' && req.headers.origin === `http://${req.headers.host}`) {
       return jobs.retry(id, token) ? send(202, { ok: true }) : send(409, { error: 'Job cannot be retried yet.' });
@@ -123,7 +139,7 @@ const server = http.createServer(async (req, res) => {
   const headers = { 'Content-Type': `${file[1]}; charset=utf-8` };
   if (url.pathname === '/') {
     headers['Cache-Control'] = 'no-store';
-    headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://eth.blockscout.com https://base.blockscout.com https://arbitrum.blockscout.com https://optimism.blockscout.com https://ethereum-rpc.publicnode.com https://base-rpc.publicnode.com https://arbitrum-one-rpc.publicnode.com https://optimism-rpc.publicnode.com https://mempool.space https://api.trongrid.io https://bsc-rpc.publicnode.com; object-src 'none'; base-uri 'none'; form-action 'self'";
+    headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://eth.blockscout.com https://base.blockscout.com https://arbitrum.blockscout.com https://optimism.blockscout.com https://ethereum-rpc.publicnode.com https://base-rpc.publicnode.com https://arbitrum-one-rpc.publicnode.com https://optimism-rpc.publicnode.com https://mempool.space https://bsc-rpc.publicnode.com; object-src 'none'; base-uri 'none'; form-action 'self'";
     headers['Referrer-Policy'] = 'no-referrer';
   }
   if (url.pathname === '/wordlist') {

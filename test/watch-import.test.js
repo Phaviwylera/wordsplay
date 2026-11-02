@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const { JSDOM } = require('jsdom');
 const esbuild = require('esbuild');
-const { Wallet, Mnemonic } = require('ethers');
+const { Wallet } = require('ethers');
 
 // Public test phrases; never fund these accounts.
 const phrase1 = 'test test test test test test test test test test test junk';
@@ -29,45 +29,6 @@ function setup() {
 }
 function submit(w, form) { form.dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true })); }
 const wait = () => new Promise(resolve => setTimeout(resolve, 60));
-
-test('generates a valid phrase locally and scans it only after submission', async () => {
-  const { dom, w, $, requests } = setup();
-  // Public deterministic test entropy, never use for real funds.
-  w.crypto.getRandomValues = bytes => { bytes.fill(0); return bytes; };
-  $('generate-phrase').click();
-  const phrase = $('seed-phrases').value;
-  assert.equal(phrase, phrase2);
-  assert.equal(phrase.split(' ').length, 12);
-  assert.equal(Mnemonic.isValidMnemonic(phrase), true);
-  assert.equal(requests.length, 0);
-  assert.equal(w.localStorage.getItem('walleto.wallets'), null);
-  submit(w, $('seed-form'));
-  for (let i = 0; i < 100 && (!w.localStorage.getItem('walleto.wallets') || $('refresh').disabled); i++) await wait();
-  assert.deepEqual(JSON.parse(w.localStorage.getItem('walleto.wallets')).map(item => item.address), [address2]);
-  assert.equal($('seed-phrases').value, '');
-  assert.equal(requests.length, 5);
-  assert.ok(requests.every(url => !url.includes('abandon')));
-  assert.equal(w.localStorage.getItem('walleto.wallets').includes(phrase), false);
-  assert.equal($('wallet-count').textContent, '0');
-  assert.match($('restore-hidden').textContent, /\(1\)/);
-  $('restore-hidden').click();
-  assert.match($('wallet-list').textContent, /Scanned/);
-  dom.window.close();
-});
-
-test('generation appends without overwriting and fails closed if secure randomness fails', () => {
-  const { dom, w, $, requests } = setup();
-  $('seed-phrases').value = phrase1;
-  w.crypto.getRandomValues = bytes => { bytes.fill(0); return bytes; };
-  $('generate-phrase').click();
-  assert.equal($('seed-phrases').value, `${phrase1}\n${phrase2}`);
-  w.crypto.getRandomValues = () => { throw new Error('unavailable'); };
-  $('generate-phrase').click();
-  assert.equal($('seed-phrases').value, `${phrase1}\n${phrase2}`);
-  assert.match($('import-status').textContent, /secure randomness is unavailable/i);
-  assert.equal(requests.length, 0);
-  dom.window.close();
-});
 
 test('pasted phrases derive multiple addresses, reject invalid lines and deduplicate without storing secrets', async () => {
   const { dom, w, $, requests } = setup();
@@ -103,7 +64,7 @@ test('extracts labeled pasted phrases and scans both addresses', async () => {
 test('address input validates, avoids duplicates and uses the address as the label', async () => {
   const { dom, w, $, requests } = setup();
   $('wallet-address').value = 'bad'; submit(w, $('address-form'));
-  assert.match($('import-status').textContent, /valid Bitcoin, TRON or EVM/);
+  assert.match($('import-status').textContent, /valid Bitcoin or EVM/);
   $('wallet-address').value = address1; submit(w, $('address-form'));
   $('wallet-address').value = address1.toLowerCase(); submit(w, $('address-form'));
   await wait();
@@ -541,14 +502,14 @@ test('canceling a scan during transient retry backoff prevents further requests'
   dom.window.close();
 });
 
-test('imports Bitcoin and TRON addresses and scans only the correct networks', async () => {
+test('imports Bitcoin, rejects removed network addresses, and scans only supported networks', async () => {
   const btc = 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4';
   const tron = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
   const { dom, w, $, requests } = setup();
   w.fetch = async url => {
     requests.push(url);
     const params = new URL(url, 'https://wallet.example').searchParams;
-    const symbol = params.get('network') === 'bitcoin' ? 'BTC' : params.get('network') === 'tron' ? 'TRX' : params.get('network') === 'bnb' ? 'BNB' : 'ETH';
+    const symbol = params.get('network') === 'bitcoin' ? 'BTC' : params.get('network') === 'bnb' ? 'BNB' : 'ETH';
     return { ok: true, json: async () => ({ coverage: symbol === 'ETH' ? 'complete' : 'native-only', assets: [{ name: symbol, symbol, type: 'native', rawBalance: '1', decimals: symbol === 'BTC' ? 8 : 6, price: null }] }) };
   };
   $('wallet-address').value = btc.toUpperCase(); submit(w, $('address-form'));
@@ -564,10 +525,15 @@ test('imports Bitcoin and TRON addresses and scans only the correct networks', a
   assert.match($('import-status').textContent, /already being tracked/);
   $('wallet-address').value = tron; submit(w, $('address-form'));
   for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
+  assert.equal(requests.length, 1, 'unsupported address never triggers a provider call');
+  assert.match($('import-status').textContent, /valid Bitcoin or EVM/);
+  assert.equal($('wallet-count').textContent, '1');
+  $('wallet-address').value = address1; submit(w, $('address-form'));
+  for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
   const recent = requests.slice(1).map(url => new URL(url, 'https://wallet.example').searchParams.get('network'));
-  assert.deepEqual(recent, ['tron'], 'the completed Bitcoin check is not restarted');
+  assert.deepEqual(new Set(recent), new Set(['ethereum', 'base', 'arbitrum', 'optimism', 'bnb']));
+  assert.equal(recent.length, 5, 'the completed Bitcoin check is not restarted');
   assert.equal($('wallet-count').textContent, '2');
-  assert.match($('asset-list').textContent, /TRX/);
   assert.match($('wallet-list').textContent, /limited token coverage/);
   dom.window.close();
 });
@@ -601,23 +567,23 @@ test('a failed Bitcoin check can be retried without losing successful mixed-netw
   w.fetch = async url => {
     const network = new URL(url, 'https://wallet.example').searchParams.get('network'); requests.push(network);
     if (network === 'bitcoin' && fail) return { ok: false, status: 400 };
-    const symbol = network === 'bitcoin' ? 'BTC' : network === 'tron' ? 'TRX' : 'ETH';
+    const symbol = network === 'bitcoin' ? 'BTC' : 'ETH';
     return { ok: true, json: async () => completeResult(network, [{ ...zeroNative, symbol, rawBalance: '1', decimals: 0 }]) };
   };
   w.scanDirect = async () => { throw new Error('Provider unavailable'); };
   w.eval(bundle); setPricing(w); w.eval(fs.readFileSync('public/app.js', 'utf8'));
   const $ = id => w.document.getElementById(id);
   for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
-  assert.equal(requests.length, 7);
+  assert.equal(requests.length, 6);
   assert.match($('scan-errors').textContent, /Bitcoin: 1/);
   assert.match($('wallet-list').children[0].textContent, /Incomplete/);
-  assert.match($('asset-list').textContent, /TRX/);
+  assert.match($('asset-list').textContent, /ETH/);
   fail = false; $('retry-failed').click();
   for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
-  assert.equal(requests.length, 8);
-  assert.equal(requests[7], 'bitcoin');
+  assert.equal(requests.length, 7);
+  assert.equal(requests[6], 'bitcoin');
   assert.match($('asset-list').textContent, /BTC/);
-  assert.match($('asset-list').textContent, /TRX/);
+  assert.match($('asset-list').textContent, /ETH/);
   assert.equal($('restore-hidden').hidden, true);
   dom.window.close();
 });

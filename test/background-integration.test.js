@@ -175,3 +175,107 @@ test('the private dashboard restores a hidden file wallet without deleting its c
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('a real uploaded job shows a saved positive during scanning and keeps it after the browser reconnects', { timeout: 30000 }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-e2e-live-'));
+  const source = `const http=require('http');const create=http.createServer;http.createServer=listener=>create((req,res)=>{if(req.method==='POST'&&!req.headers.origin&&/jsdom/.test(req.headers['user-agent']||''))req.headers.origin='http://'+req.headers.host;return listener(req,res)});
+    let release;const gate=new Promise(r=>{release=r});process.on('message',()=>release());
+    require('./lib/scanner').scanWallet=async (_address,network)=>{
+      if(network==='ethereum')return {assets:[{name:'Live Ether',symbol:'ETH',type:'native',rawBalance:'1000000000000000000',decimals:18,price:'2'}]};
+      await gate;const assets=[{name:'Native',symbol:'ETH',type:'native',rawBalance:'0',decimals:18,price:null}];
+      if(network==='bnb')assets.push({name:'BUSD',symbol:'BUSD',type:'BEP-20',contract:'0xe9e7cea3dedca5984780bafc599bd69add087d56',rawBalance:'0',decimals:18,price:null});
+      return {assets,...(network==='bnb'?{coverage:'bnb-and-busd'}:{})};};
+    require('./lib/market').getMarket=async()=>({currency:'INR',usdToInr:83,prices:{}});require('./server');`;
+  const child = spawn(process.execPath, ['-e', source], { cwd: process.cwd(), env: { ...process.env, PORT: '0', WALLETO_BACKGROUND_DIR: dir }, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+  let first; let reopened;
+  try {
+    const port = await new Promise((resolve, reject) => {
+      let output = ''; const timer = setTimeout(() => reject(new Error('server startup timeout')), 10000);
+      child.stdout.on('data', chunk => { output += chunk; const match = output.match(/Wallet viewer running on port (\d+)/); if (match) { clearTimeout(timer); resolve(Number(match[1])); } });
+      child.on('exit', code => { clearTimeout(timer); reject(new Error(`server exited: ${code}`)); });
+    });
+    const origin = `http://127.0.0.1:${port}/`;
+    first = page(origin); const w = first.window; const field = w.document.getElementById('seed-file');
+    Object.defineProperty(field, 'files', { configurable: true, value: [new w.File([phrase], 'wallets.txt', { type: 'text/plain' })] });
+    field.dispatchEvent(new w.Event('change', { bubbles: true }));
+    await until(() => w.localStorage.getItem('walleto.background-jobs'));
+    const saved = w.localStorage.getItem('walleto.background-jobs'); const [{ id, token }] = JSON.parse(saved);
+    await until(() => w.document.getElementById('recent-find-list').textContent.includes('Live Ether'));
+    assert.match(w.document.getElementById('progress-text').textContent, /Checking balances on EC2/);
+    assert.match(w.document.getElementById('asset-list').textContent, /Live Ether/);
+    assert.equal(w.localStorage.getItem('walleto.wallets'), null);
+    assert.equal(saved.includes(phrase), false);
+    const headers = { Authorization: `Bearer ${token}` };
+    const live = await (await fetch(`${origin}api/background/jobs/${id}/dashboard`, { headers })).json();
+    assert.equal(live.status, 'scanning'); assert.equal(live.completed, 1); assert.equal(live.total, 5);
+    assert.equal(live.assetCount, 1); assert.equal(live.recentAssets[0].asset.name, 'Live Ether');
+    assert.equal(JSON.stringify(live).includes(phrase), false);
+    w.document.querySelector('#recent-find-list button').click();
+    w.document.getElementById('asset-export-reveal').click();
+    await until(() => w.document.getElementById('asset-export-phrase').textContent === phrase);
+    first.window.close(); first = null;
+    child.send('release');
+    await until(async () => (await (await fetch(`${origin}api/background/jobs/${id}`, { headers })).json()).status === 'finished');
+    reopened = page(origin, saved); const v = reopened.window;
+    await until(() => v.document.getElementById('asset-list').textContent.includes('Live Ether'));
+    assert.match(v.document.getElementById('recent-find-list').textContent, /Live Ether/);
+    assert.equal(v.document.getElementById('asset-count').textContent, '1');
+    assert.match(v.document.getElementById('progress-text').textContent, /Server scan complete/);
+  } finally {
+    first?.window.close(); reopened?.window.close();
+    if (child.exitCode === null && child.signalCode === null) { child.kill('SIGTERM'); await new Promise(resolve => child.once('exit', resolve)); }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('automatic EC2 generation streams multiple wallets into the private scan and stops without exposing phrases', { timeout: 30000 }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-e2e-generated-'));
+  const source = `require('./lib/scanner').scanWallet=async (_address,network)=>{
+      const assets=[{name:network==='ethereum'?'Generated Ether':'Native',symbol:'ETH',type:'native',rawBalance:network==='ethereum'?'1000000000000000000':'0',decimals:18,price:'2'}];
+      if(network==='bnb')assets.push({name:'BUSD',symbol:'BUSD',type:'BEP-20',contract:'0xe9e7cea3dedca5984780bafc599bd69add087d56',rawBalance:'0',decimals:18,price:null});
+      return {assets,...(network==='bnb'?{coverage:'bnb-and-busd'}:{})};};
+    require('./lib/market').getMarket=async()=>({currency:'INR',usdToInr:83,prices:{}});require('./server');`;
+  const child = spawn(process.execPath, ['-e', source], { cwd: process.cwd(), env: { ...process.env, PORT: '0', WALLETO_BACKGROUND_DIR: dir }, stdio: ['ignore', 'pipe', 'pipe'] });
+  let dom; let output = '';
+  child.stderr.on('data', chunk => { output += chunk; });
+  try {
+    const port = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('server startup timeout')), 10000);
+      child.stdout.on('data', chunk => { output += chunk; const match = output.match(/Wallet viewer running on port (\d+)/); if (match) { clearTimeout(timer); resolve(Number(match[1])); } });
+      child.on('exit', code => { clearTimeout(timer); reject(new Error(`server exited: ${code}`)); });
+    });
+    const origin = `http://127.0.0.1:${port}/`; dom = page(origin); const w = dom.window;
+    w.document.getElementById('generate-phrase').click();
+    await until(() => w.document.getElementById('asset-list').textContent.includes('Generated Ether'));
+    assert.equal(w.document.getElementById('seed-phrases').value, '');
+    assert.match(w.document.getElementById('portfolio-source').selectedOptions[0].textContent, /Generated scan 1/);
+    const saved = w.localStorage.getItem('walleto.background-jobs'); const [{ id, token, kind }] = JSON.parse(saved);
+    assert.equal(kind, 'generated'); assert.equal(w.localStorage.getItem('walleto.wallets'), null);
+    const status = await (await fetch(`${origin}api/background/jobs/${id}`, { headers: { Authorization: `Bearer ${token}` } })).json();
+    assert.equal(status.kind, 'generated'); assert.ok(status.wallets >= 10);
+    assert.equal(status.generationActive, true); assert.equal(status.status, 'scanning');
+    w.document.querySelector('#asset-list .asset-open').click();
+    const owner = w.document.getElementById('asset-export-address').textContent;
+    w.document.getElementById('asset-export-reveal').click();
+    await until(() => w.document.getElementById('asset-export-phrase').textContent.split(' ').length === 12);
+    const generated = w.document.getElementById('asset-export-phrase').textContent;
+    const { Mnemonic } = require('ethers');
+    assert.equal(Mnemonic.isValidMnemonic(generated), true);
+    assert.equal(Mnemonic.fromPhrase(generated).entropy.length, 34);
+    assert.equal(Wallet.fromPhrase(generated).address, owner);
+    assert.equal(saved.includes(generated), false); assert.equal(output.includes(generated), false);
+    await until(() => !w.document.getElementById('stop-generation').hidden);
+    w.document.getElementById('stop-generation').click();
+    await until(async () => (await (await fetch(`${origin}api/background/jobs/${id}`, { headers: { Authorization: `Bearer ${token}` } })).json()).status === 'finished');
+    const finished = await (await fetch(`${origin}api/background/jobs/${id}`, { headers: { Authorization: `Bearer ${token}` } })).json();
+    assert.equal(finished.generationActive, false); assert.equal(finished.completed, finished.total);
+    for (const file of fs.readdirSync(dir)) {
+      const full = path.join(dir, file);
+      if (fs.statSync(full).isFile()) assert.equal(fs.readFileSync(full).includes(Buffer.from(generated)), false);
+    }
+  } finally {
+    dom?.window.close();
+    if (child.exitCode === null && child.signalCode === null) { child.kill('SIGTERM'); await new Promise(resolve => child.once('exit', resolve)); }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

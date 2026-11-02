@@ -17,7 +17,7 @@ test('concurrent market requests are coalesced, cached and use observed BUSD and
   const [first, second] = await Promise.all([service(), service()]);
   assert.deepEqual(first, second); assert.equal(calls.length, 2);
   assert.equal(first.currency, 'INR'); assert.equal(first.usdToInr, 83.5);
-  assert.equal(first.prices.bnb, 612.34); assert.equal(first.prices.busd, 0.972); assert.equal(first.prices.trx, null);
+  assert.equal(first.prices.bnb, 612.34); assert.equal(first.prices.busd, 0.972); assert.equal(first.prices.eth, null); assert.equal(Object.hasOwn(first.prices, 'trx'), false);
   assert.deepEqual(new Set(calls), new Set([CRYPTO_URL, FX_URL]));
   await service(); assert.equal(calls.length, 2);
   offline = true; now += 31 * 60 * 1000;

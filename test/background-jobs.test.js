@@ -231,8 +231,11 @@ test('the dashboard pages positive assets and wallet states on the server withou
     assert.equal(final.incomplete, 0); assert.equal(final.assetCount, 106); assert.equal(final.knownValue, 620);
     assert.equal(final.visibleWallets, 1); assert.equal(final.hiddenWallets, 1);
     const db = new DatabaseSync(path.join(dir, 'jobs.sqlite'));
-    const plan = db.prepare('EXPLAIN QUERY PLAN SELECT address,network FROM checks WHERE job = ? AND has_positive = 1').all(id);
+    const plan = db.prepare('EXPLAIN QUERY PLAN SELECT address,network FROM checks INDEXED BY checks_positive_idx WHERE job = ? AND has_positive = 1 ORDER BY address,network').all(id);
     assert.match(JSON.stringify(plan), /checks_positive_idx/);
+    const recentPlan = db.prepare('EXPLAIN QUERY PLAN SELECT address,network FROM checks INDEXED BY checks_recent_positive_idx WHERE job = ? AND has_positive = 1 ORDER BY positive_at DESC,address,network LIMIT 12').all(id);
+    assert.match(JSON.stringify(recentPlan), /checks_recent_positive_idx/);
+    assert.doesNotMatch(JSON.stringify(recentPlan), /TEMP B-TREE/);
     const addWallet = db.prepare('INSERT INTO wallets (job,address) VALUES (?,?)');
     const addCheck = db.prepare("INSERT INTO checks (job,address,network,status,has_positive) VALUES (?,?,'ethereum','done',0)");
     db.exec('BEGIN');
@@ -356,7 +359,8 @@ test('backfills positive balances in legacy jobs where the column already existe
     assert.equal(jobs.dashboard(id, token).assets[0].address, address);
     assert.equal(jobs.dashboard(id, token).phraseMatching, false);
     const migrated = new DatabaseSync(path.join(dir, 'jobs.sqlite'));
-    assert.equal(migrated.prepare('SELECT COUNT(*) AS count FROM background_migrations').get().count, 3);
+    assert.ok(migrated.prepare("SELECT 1 FROM background_migrations WHERE name = 'backfill-positive-assets-v1'").get());
+    assert.ok(migrated.prepare("SELECT 1 FROM background_migrations WHERE name = 'generated-counters-v1'").get());
     migrated.close();
   } finally { jobs.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
@@ -572,5 +576,297 @@ test('configured EC2 worker limits increase parallel checks without exceeding ei
     hold = false; held.forEach(resolve => resolve());
     if (id) await finished(jobs, id, token).catch(() => {});
     jobs.close(); fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('one automatic EC2 job continuously generates valid 128-bit combinations and scans only public addresses', { timeout: 15000 }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-generated-'));
+  const calls = [];
+  const jobs = createBackgroundJobs(dir, { scan: async (owner, network) => { calls.push({ owner, network }); return fakeScan(owner, network); } });
+  try {
+    const { id, token, kind } = jobs.generate();
+    assert.equal(kind, 'generated'); assert.equal(jobs.generate(), null, 'only one automatic producer runs at a time');
+    for (let i = 0; i < 200 && (jobs.status(id, token)?.wallets || 0) < 20; i++) await wait();
+    const running = jobs.status(id, token);
+    assert.equal(running.status, 'scanning'); assert.equal(running.generationActive, true);
+    assert.ok(running.wallets >= 20); assert.equal(running.generationTarget, 100);
+    assert.equal(jobs.stopGeneration(id, '0'.repeat(64)), false);
+    assert.equal(jobs.stopGeneration(id, token), true);
+    const status = await finished(jobs, id, token);
+    assert.equal(status.generationActive, false); assert.equal(status.incomplete, 0);
+    assert.equal(status.total, status.wallets * 5); assert.equal(status.completed, status.total);
+    const dashboard = jobs.dashboard(id, token); assert.equal(dashboard.assetCount, status.total);
+    const owner = dashboard.walletPage[0].address;
+    const generated = jobs.phrase(id, token, owner);
+    assert.equal(generated.trim().split(/\s+/).length, 12);
+    assert.equal(Mnemonic.isValidMnemonic(generated), true);
+    assert.equal(Mnemonic.fromPhrase(generated).entropy.length, 34);
+    assert.equal(Wallet.fromPhrase(generated).address, owner);
+    assert.equal(JSON.stringify(dashboard).includes(generated), false);
+    assert.equal(JSON.stringify(calls).includes(generated), false);
+    assert.equal(jobs.phrase(id, '0'.repeat(64), owner), null);
+    for (const file of fs.readdirSync(dir)) assert.equal(fs.readFileSync(path.join(dir, file)).includes(Buffer.from(generated)), false);
+    assert.equal(calls.length, status.total); assert.ok(calls.every(call => /^0x[0-9a-f]{40}$/i.test(call.owner)));
+    const after = status.wallets; await new Promise(resolve => setTimeout(resolve, 150));
+    assert.equal(jobs.status(id, token).wallets, after, 'stopped job does not add more wallets');
+  } finally { jobs.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('generated zero wallets hide recoverably, while failed checks remain visible and retain encrypted phrases', { timeout: 15000 }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-generated-zero-'));
+  let failBase = false;
+  const jobs = createBackgroundJobs(dir, { generationBatchSize: 1, generationRate: 5, scan: async (_owner, network) => {
+    if (network === 'base' && failBase) throw new Error('offline');
+    return completeResult(network, [{ type: 'native', symbol: 'ETH', rawBalance: '0', decimals: 18, price: null }]);
+  } });
+  try {
+    const zero = jobs.generate();
+    for (let i = 0; i < 200 && !(jobs.status(zero.id, zero.token)?.hiddenWallets); i++) await wait();
+    assert.equal(jobs.stopGeneration(zero.id, zero.token), true);
+    const complete = await finished(jobs, zero.id, zero.token);
+    assert.ok(complete.wallets >= 1); assert.equal(complete.hiddenWallets, complete.wallets); assert.equal(complete.visibleWallets, 0);
+    assert.equal(complete.retainsPhrases, false);
+    assert.equal(jobs.restoreHidden(zero.id, zero.token), complete.wallets);
+    const restored = jobs.dashboard(zero.id, zero.token);
+    assert.equal(restored.visibleWallets, complete.wallets); assert.ok(restored.walletPage.length > 0);
+    assert.equal(jobs.phrase(zero.id, zero.token, restored.walletPage[0].address), null, 'discarded empty phrase is not recoverable');
+    assert.equal(jobs.refreshBnb(zero.id, zero.token), true);
+    const refreshed = await finished(jobs, zero.id, zero.token);
+    assert.equal(refreshed.completed, refreshed.total); assert.equal(refreshed.incomplete, 0);
+    assert.equal(refreshed.hiddenWallets, refreshed.wallets);
+    failBase = true;
+    const incomplete = jobs.generate();
+    for (let i = 0; i < 200 && !(jobs.status(incomplete.id, incomplete.token)?.incomplete); i++) await wait();
+    assert.equal(jobs.stopGeneration(incomplete.id, incomplete.token), true);
+    const partial = await finished(jobs, incomplete.id, incomplete.token);
+    assert.ok(partial.incomplete >= 1); assert.equal(partial.hiddenWallets, 0);
+    assert.equal(partial.visibleWallets, partial.wallets); assert.equal(partial.retainsPhrases, true);
+    failBase = false; assert.equal(jobs.retry(incomplete.id, incomplete.token), true);
+    const retried = await finished(jobs, incomplete.id, incomplete.token);
+    assert.equal(retried.incomplete, 0); assert.equal(retried.hiddenWallets, retried.wallets); assert.equal(retried.retainsPhrases, false);
+  } finally { jobs.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('automatic generation applies backlog, provider-error and free-disk safeguards', { timeout: 20000 }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-generated-bounds-'));
+  let release; const gate = new Promise(resolve => { release = resolve; });
+  let jobs = createBackgroundJobs(dir, { generationBatchSize: 3, generationMaxBacklog: 15,
+    scan: async (owner, network) => { await gate; return fakeScan(owner, network); } });
+  try {
+    const first = jobs.generate();
+    for (let i = 0; i < 200 && jobs.status(first.id, first.token).wallets < 3; i++) await wait();
+    await new Promise(resolve => setTimeout(resolve, 350));
+    const limited = jobs.status(first.id, first.token);
+    assert.equal(limited.wallets, 3); assert.equal(limited.total, 15); assert.equal(limited.completed, 0);
+    release();
+    for (let i = 0; i < 200 && jobs.status(first.id, first.token).wallets <= 3; i++) await wait();
+    assert.ok(jobs.status(first.id, first.token).wallets > 3, 'generation resumes when backlog drains');
+    jobs.stopGeneration(first.id, first.token); await finished(jobs, first.id, first.token); jobs.close();
+    jobs = createBackgroundJobs(dir, { generationBatchSize: 1, generationMaxIncomplete: 1, scan: async () => { throw new Error('offline'); } });
+    const failures = jobs.generate(); const failed = await finished(jobs, failures.id, failures.token);
+    assert.equal(failed.generationActive, false); assert.ok(failed.incomplete >= 1);
+    assert.match(failed.generationReason, /many incomplete checks/i); jobs.close();
+    jobs = createBackgroundJobs(dir, { generationDiskAvailable: () => false, scan: async () => { throw new Error('must not scan'); } });
+    const lowDisk = jobs.generate(); const stopped = await finished(jobs, lowDisk.id, lowDisk.token);
+    assert.equal(stopped.wallets, 0); assert.match(stopped.generationReason, /disk space/i);
+  } finally { release(); await wait(); jobs.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a new positive remains visible during a large scan even beyond the first asset page and after restart', { timeout: 20000 }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-recent-'));
+  let releaseEthereum; let releaseBase; let jobs;
+  const ethereum = new Promise(resolve => { releaseEthereum = resolve; });
+  const base = new Promise(resolve => { releaseBase = resolve; });
+  const result = [{ name: 'Recent Ether', type: 'native', symbol: 'ETH', rawBalance: '1000000000000000000', decimals: 18, price: '2' }];
+  jobs = createBackgroundJobs(dir, { scan: async (_owner, network) => {
+    if (network === 'ethereum') { await ethereum; return { assets: result }; }
+    if (network === 'base') await base;
+    return completeResult(network, [{ type: 'native', symbol: 'ETH', rawBalance: '0', decimals: 18, price: null }]);
+  } });
+  try {
+    const { id, token } = await jobs.receive(Readable.from(phrase), { retainPhrases: true });
+    for (let i = 0; i < 100 && jobs.status(id, token)?.status !== 'scanning'; i++) await wait();
+    assert.equal(jobs.status(id, token).status, 'scanning');
+    const db = new DatabaseSync(path.join(dir, 'jobs.sqlite'));
+    const addWallet = db.prepare('INSERT INTO wallets (job,address) VALUES (?,?)');
+    const addCheck = db.prepare("INSERT INTO checks (job,address,network,status,assets,has_positive,positive_at) VALUES (?,?,'ethereum','done',?,1,1)");
+    db.exec('BEGIN');
+    for (let i = 1; i <= 101; i++) {
+      const owner = `0x${i.toString(16).padStart(40, '0')}`;
+      addWallet.run(id, owner); addCheck.run(id, owner, JSON.stringify([{ ...result[0], name: 'Earlier Ether' }]));
+    }
+    db.exec('COMMIT'); db.close();
+    releaseEthereum();
+    let dashboard;
+    for (let i = 0; i < 100; i++) {
+      dashboard = jobs.dashboard(id, token);
+      if (dashboard.recentAssets.some(row => row.address === Wallet.fromPhrase(phrase).address)) break;
+      await wait();
+    }
+    const owner = Wallet.fromPhrase(phrase).address;
+    assert.equal(dashboard.status, 'scanning');
+    assert.equal(dashboard.assetCount, 102); assert.equal(dashboard.assets.length, 100);
+    assert.equal(dashboard.assets.some(row => row.address === owner), false, 'new positive is beyond the address-sorted first page');
+    assert.equal(dashboard.recentAssets[0].address, owner);
+    assert.equal(dashboard.recentAssets[0].asset.name, 'Recent Ether');
+    assert.equal(jobs.dashboard(id, token, { network: 'base' }).recentAssets.length, 0);
+    assert.equal(jobs.phrase(id, token, owner), phrase);
+    releaseBase(); await finished(jobs, id, token);
+    jobs.close(); jobs = createBackgroundJobs(dir, { scan: fakeScan });
+    const reopened = jobs.dashboard(id, token);
+    assert.equal(reopened.recentAssets[0].address, owner);
+    assert.equal(reopened.assetCount, 102);
+    assert.ok(jobs.dashboard(id, token, { assetOffset: 100 }).assets.some(row => row.address === owner));
+  } finally {
+    releaseEthereum(); releaseBase();
+    await wait(); jobs.close(); fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('automatic generation and queued checks resume after an abrupt worker restart', { timeout: 20000 }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-generated-restart-'));
+  const modulePath = path.resolve('lib/background-jobs.js');
+  const source = `const {createBackgroundJobs}=require(${JSON.stringify(modulePath)});const j=createBackgroundJobs(process.argv[1],{scan:()=>new Promise(()=>{})});
+    const link=j.generate();const timer=setInterval(()=>{const s=j.status(link.id,link.token);if(s.wallets>=10){clearInterval(timer);console.log(JSON.stringify(link));}},30);`;
+  const child = spawn(process.execPath, ['--no-warnings', '-e', source, dir], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let jobs;
+  try {
+    const link = await new Promise((resolve, reject) => {
+      let output = ''; const timeout = setTimeout(() => reject(new Error('generation child timeout')), 10000);
+      child.stdout.on('data', chunk => { output += chunk; if (output.includes('\n')) { clearTimeout(timeout); resolve(JSON.parse(output)); } });
+      child.on('error', reject); child.on('exit', code => { if (code) { clearTimeout(timeout); reject(new Error(`generation child exited ${code}`)); } });
+    });
+    child.kill('SIGKILL'); await new Promise(resolve => child.once('exit', resolve));
+    const db = new DatabaseSync(path.join(dir, 'jobs.sqlite'));
+    const before = db.prepare('SELECT generated_count, generation_active FROM jobs WHERE id = ?').get(link.id); db.close();
+    assert.ok(before.generated_count >= 10); assert.equal(before.generation_active, 1);
+    jobs = createBackgroundJobs(dir, { scan: fakeScan });
+    for (let i = 0; i < 200 && jobs.status(link.id, link.token).wallets <= before.generated_count; i++) await wait();
+    const resumed = jobs.status(link.id, link.token);
+    assert.equal(resumed.generationActive, true); assert.ok(resumed.wallets > before.generated_count);
+    assert.equal(jobs.stopGeneration(link.id, link.token), true);
+    const done = await finished(jobs, link.id, link.token);
+    assert.equal(done.completed, done.total); assert.equal(done.incomplete, 0);
+    assert.ok(jobs.dashboard(link.id, link.token).assetCount > 0);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await new Promise(resolve => child.once('exit', resolve)); }
+    jobs?.close(); fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('generation pacing is bounded independently of fast providers', { timeout: 12000 }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-generated-rate-'));
+  const choices = Array.from({ length: 20 }, (_, i) => {
+    const entropy = Buffer.alloc(16); entropy.writeUInt32BE(i + 1000, 12);
+    const value = Mnemonic.fromEntropy(entropy).phrase;
+    return { phrase: value, address: Wallet.fromPhrase(value).address };
+  });
+  let cursor = 0;
+  const jobs = createBackgroundJobs(dir, { generationRate: 10, generationBatchSize: 2,
+    generateBatch: async count => choices.slice(cursor, cursor += count), scan: fakeScan });
+  try {
+    const link = jobs.generate();
+    for (let i = 0; i < 100 && jobs.status(link.id, link.token).wallets < 2; i++) await wait();
+    await new Promise(resolve => setTimeout(resolve, 550));
+    const count = jobs.status(link.id, link.token).wallets;
+    assert.ok(count >= 2 && count <= 8, `bounded 10/s producer generated ${count} wallets in this interval`);
+    jobs.stopGeneration(link.id, link.token); await finished(jobs, link.id, link.token);
+  } finally { jobs.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('automatic generation shares the existing fair bounded queue with uploaded jobs', { timeout: 15000 }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-generated-share-'));
+  let active = 0; let maxActive = 0; const perNetwork = new Map(); let maxPerNetwork = 0;
+  const jobs = createBackgroundJobs(dir, { concurrency: 5, perNetworkConcurrency: 1, generationBatchSize: 2, scan: async (owner, network) => {
+    active++; maxActive = Math.max(maxActive, active);
+    perNetwork.set(network, (perNetwork.get(network) || 0) + 1); maxPerNetwork = Math.max(maxPerNetwork, perNetwork.get(network));
+    try { await new Promise(resolve => setTimeout(resolve, 25)); return await fakeScan(owner, network); }
+    finally { active--; perNetwork.set(network, perNetwork.get(network) - 1); }
+  } });
+  try {
+    const generated = jobs.generate();
+    for (let i = 0; i < 200 && !jobs.status(generated.id, generated.token).wallets; i++) await wait();
+    const upload = await jobs.receive(Readable.from(phrase), { retainPhrases: true });
+    const uploaded = await finished(jobs, upload.id, upload.token);
+    assert.equal(uploaded.completed, 5); assert.equal(uploaded.incomplete, 0);
+    assert.equal(jobs.status(generated.id, generated.token).generationActive, true);
+    assert.equal(jobs.stopGeneration(generated.id, generated.token), true);
+    const complete = await finished(jobs, generated.id, generated.token);
+    assert.equal(complete.completed, complete.total); assert.equal(complete.incomplete, 0);
+    assert.ok(maxActive <= 5); assert.ok(maxPerNetwork <= 1);
+  } finally { jobs.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a fatal database error waits for in-flight scans before releasing the job', { timeout: 15000 }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-generated-error-'));
+  const waiting = []; let lock;
+  const jobs = createBackgroundJobs(dir, { concurrency: 5, perNetworkConcurrency: 1, generationRate: 1, generationBatchSize: 1,
+    scan: async (owner, network) => { await new Promise(resolve => waiting.push(resolve)); return fakeScan(owner, network); } });
+  try {
+    const link = jobs.generate();
+    for (let i = 0; i < 200 && waiting.length < 5; i++) await wait();
+    assert.equal(waiting.length, 5); assert.equal(jobs.stopGeneration(link.id, link.token), true);
+    lock = new DatabaseSync(path.join(dir, 'jobs.sqlite')); lock.exec('BEGIN IMMEDIATE');
+    waiting.shift()(); await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(jobs.status(link.id, link.token).status, 'scanning');
+    assert.equal(jobs.remove(link.id, link.token), false, 'the job remains active while other scans are still in flight');
+    lock.exec('ROLLBACK'); lock.close(); lock = null;
+    for (const release of waiting.splice(0)) release();
+    for (let i = 0; i < 200 && jobs.status(link.id, link.token).status !== 'failed'; i++) await wait();
+    const status = jobs.status(link.id, link.token);
+    assert.equal(status.status, 'failed'); assert.equal(status.generationActive, false);
+    assert.equal(status.completed, 0); assert.equal(status.total, 5); assert.equal(status.hiddenWallets, 0);
+    assert.equal(jobs.remove(link.id, link.token), true);
+  } finally {
+    if (lock) { try { lock.exec('ROLLBACK'); lock.close(); } catch (_) {} }
+    for (const release of waiting) release();
+    jobs.close(); fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('closing with scans in flight leaves generated work restartable', { timeout: 15000 }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-generated-shutdown-'));
+  const waiting = []; let resumed;
+  const jobs = createBackgroundJobs(dir, { generationBatchSize: 1,
+    scan: async (owner, network) => { await new Promise(resolve => waiting.push(resolve)); return fakeScan(owner, network); } });
+  try {
+    const link = jobs.generate();
+    for (let i = 0; i < 200 && waiting.length < 5; i++) await wait();
+    assert.ok(waiting.length >= 5);
+    jobs.close(); for (const release of waiting.splice(0)) release();
+    await new Promise(resolve => setTimeout(resolve, 250));
+    resumed = createBackgroundJobs(dir, { scan: fakeScan });
+    for (let i = 0; i < 200 && resumed.status(link.id, link.token).wallets < 2; i++) await wait();
+    assert.equal(resumed.status(link.id, link.token).generationActive, true);
+    assert.equal(resumed.stopGeneration(link.id, link.token), true);
+    const done = await finished(resumed, link.id, link.token);
+    assert.equal(done.completed, done.total); assert.equal(done.incomplete, 0);
+  } finally { for (const release of waiting) release(); jobs.close(); resumed?.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a fatal scan error retains already imported phrases and results', { timeout: 10000 }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-upload-error-'));
+  const waiting = []; let lock;
+  const jobs = createBackgroundJobs(dir, { concurrency: 5, perNetworkConcurrency: 1,
+    scan: async (owner, network) => { await new Promise(resolve => waiting.push(resolve)); return fakeScan(owner, network); } });
+  try {
+    const link = await jobs.receive(Readable.from(phrase), { retainPhrases: true });
+    for (let i = 0; i < 200 && waiting.length < 5; i++) await wait();
+    assert.equal(waiting.length, 5);
+    lock = new DatabaseSync(path.join(dir, 'jobs.sqlite')); lock.exec('BEGIN IMMEDIATE');
+    waiting.shift()(); await new Promise(resolve => setTimeout(resolve, 100));
+    lock.exec('ROLLBACK'); lock.close(); lock = null;
+    for (const release of waiting.splice(0)) release();
+    for (let i = 0; i < 200 && jobs.status(link.id, link.token).status !== 'failed'; i++) await wait();
+    const status = jobs.status(link.id, link.token);
+    assert.equal(status.status, 'failed'); assert.equal(status.completed, 0); assert.equal(status.hiddenWallets, 0);
+    assert.equal(status.retainsPhrases, true);
+    assert.match(status.error, /saved results and phrases are retained/i);
+    const verify = new DatabaseSync(path.join(dir, 'jobs.sqlite'));
+    assert.equal(verify.prepare('SELECT COUNT(*) AS count FROM retained_phrases WHERE job = ?').get(link.id).count, 1);
+    verify.close();
+  } finally {
+    if (lock) { try { lock.exec('ROLLBACK'); lock.close(); } catch (_) {} }
+    for (const release of waiting) release(); jobs.close(); fs.rmSync(dir, { recursive: true, force: true });
   }
 });

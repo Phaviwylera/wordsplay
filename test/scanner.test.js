@@ -108,12 +108,12 @@ test('scan API preserves a rate-limit response for the client', async () => {
 
 const btc = 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4'; // Public BIP-350 test vector.
 const tron = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'; // Public token-contract address.
-test('validates Bitcoin and TRON checksums, EVM format and network matching', async () => {
-  for (const value of [btc, btc.toUpperCase(), '1BoatSLRHtKNngkdXEeobR76b53LETtpyT', '3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy', 'bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0', tron, address]) assert.equal(validAddress(value), true, value);
-  for (const value of ['bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t5', 'Bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4', 'tb1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3q0sl5k7', 'bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqh2y7hd', `${tron.slice(0, -1)}u`, 'a'.repeat(10000)]) assert.equal(validAddress(value), false, value.slice(0, 100));
+test('validates Bitcoin checksums and EVM format; removed networks are rejected', async () => {
+  for (const value of [btc, btc.toUpperCase(), '1BoatSLRHtKNngkdXEeobR76b53LETtpyT', '3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy', 'bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0', address]) assert.equal(validAddress(value), true, value);
+  for (const value of ['bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t5', 'Bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4', 'tb1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3q0sl5k7', 'bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqh2y7hd', tron, `${tron.slice(0, -1)}u`, 'a'.repeat(10000)]) assert.equal(validAddress(value), false, value.slice(0, 100));
   await assert.rejects(scanWallet(btc, 'ethereum'), /match network/);
-  await assert.rejects(scanWallet(address, 'tron'), /match network/);
-  await assert.rejects(scanWallet(tron, 'bnb'), /match network/);
+  await assert.rejects(scanWallet(address, 'tron'), /Unsupported network/);
+  await assert.rejects(scanWallet(tron, 'bnb'), /valid wallet address/);
 });
 
 test('scans Bitcoin confirmed and pending amounts with exact satoshis', async () => {
@@ -133,13 +133,7 @@ test('scans Bitcoin confirmed and pending amounts with exact satoshis', async ()
   }
 });
 
-test('scans TRX and native BNB with strict responses', async () => {
-  const tx = await scanWallet(tron, 'tron', async url => {
-    assert.equal(url, `https://api.trongrid.io/v1/accounts/${tron}`);
-    return { ok: true, json: async () => ({ success: true, data: [{ balance: 1234567 }] }) };
-  });
-  assert.equal(tx.assets[0].rawBalance, '1234567');
-  assert.equal(tx.assets[0].decimals, 6);
+test('scans native BNB and BUSD with strict responses', async () => {
   const { BUSD_BSC } = require('../lib/prices');
   const calls = [];
   const fetcher = async (url, options) => {
@@ -163,8 +157,6 @@ test('scans TRX and native BNB with strict responses', async () => {
   assert.equal(bnb.coverage, 'bnb-and-busd');
   const { scanDirect } = require('../public/direct-scan');
   assert.equal((await scanDirect(address, 'bnb', fetcher)).assets[1].rawBalance, '25000000000000000000');
-  await assert.rejects(scanWallet(tron, 'tron', async () => ({ ok: true, json: async () => ({ success: true, data: [] }) })), /Incomplete/);
-  await assert.rejects(scanWallet(tron, 'tron', async () => ({ ok: true, json: async () => ({ success: true, data: [{}] }) })), /Invalid/);
   await assert.rejects(scanWallet(address, 'bnb', async () => ({ ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: 'garbage' }) })), /Invalid/);
   await assert.rejects(scanWallet(address, 'bnb', async () => ({ ok: false, status: 429 })), /429/);
 });
@@ -195,7 +187,7 @@ test('scan API rejects valid addresses submitted to the wrong network', async ()
   const handler = require('../api/scan');
   const result = {};
   const res = { status(code) { result.status = code; return this; }, json(body) { result.body = body; return this; } };
-  await handler({ method: 'GET', query: { address: btc, network: 'tron' } }, res);
+  await handler({ method: 'GET', query: { address: btc, network: 'ethereum' } }, res);
   assert.equal(result.status, 400);
   assert.match(result.body.error, /match network/);
 });
