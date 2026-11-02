@@ -8,7 +8,7 @@ const { spawnSync } = require('node:child_process');
 const script = path.resolve('deploy/ec2/update.sh');
 const commit = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const previous = `walleto:${'b'.repeat(40)}`;
-function harness({ failBuild = false, failStart = false, failProbe = false, failConcurrency, alreadyDeployed = false, background = false, concurrency, perNetwork, deployedSettings } = {}) {
+function harness({ failBuild = false, failStart = false, failProbe = false, failConcurrency, alreadyDeployed = false, background = false, concurrency, perNetwork, trustedOrigin, deployedSettings } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-deploy-'));
   const bin = path.join(dir, 'bin'); const state = path.join(dir, 'state'); const repo = path.join(dir, 'repo');
   fs.mkdirSync(bin); fs.mkdirSync(state); fs.mkdirSync(repo);
@@ -33,9 +33,10 @@ function harness({ failBuild = false, failStart = false, failProbe = false, fail
 `);
   for (const name of ['git', 'docker']) fs.chmodSync(path.join(bin, name), 0o755);
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, REPO_DIR: repo, STATE_DIR: state, LOG: path.join(dir, 'log'), COMMIT: commit, PREVIOUS: previous, FAIL_BUILD: failBuild ? '1' : '0', FAIL_START: failStart ? '1' : '0', FAIL_PROBE: failProbe ? '1' : '0', FAIL_CONCURRENCY: failConcurrency || '', PROBE_ATTEMPTS: '1' };
-  delete env.WALLETO_SCAN_CONCURRENCY; delete env.WALLETO_SCAN_PER_NETWORK;
+  delete env.WALLETO_SCAN_CONCURRENCY; delete env.WALLETO_SCAN_PER_NETWORK; delete env.WALLETO_TRUSTED_ORIGIN;
   if (concurrency !== undefined) env.WALLETO_SCAN_CONCURRENCY = concurrency;
   if (perNetwork !== undefined) env.WALLETO_SCAN_PER_NETWORK = perNetwork;
+  if (trustedOrigin !== undefined) env.WALLETO_TRUSTED_ORIGIN = trustedOrigin;
   const result = spawnSync('bash', [script], { env, encoding: 'utf8' });
   const log = fs.existsSync(env.LOG) ? fs.readFileSync(env.LOG, 'utf8') : '';
   return { dir, state, result, log };
@@ -112,6 +113,26 @@ test('private worker settings are passed to the single app container and recorde
     assert.equal(fs.readFileSync(path.join(h.state, 'deployed-worker-settings'), 'utf8').trim(), 'enabled:20:4');
     assert.equal((h.log.match(/docker run -d --name walleto-app --restart/g) || []).length, 1, 'does not launch additional app processes');
   } finally { fs.rmSync(h.dir, { recursive: true, force: true }); }
+});
+
+test('a private Tailscale origin is validated, passed into the loopback-only app and deployment-tracked', () => {
+  const h = harness({ background: true, trustedOrigin: 'https://walleto-device.example-tailnet.ts.net' });
+  try {
+    assert.equal(h.result.status, 0, h.result.stderr);
+    assert.ok(h.log.includes('-p 127.0.0.1:3000:3000') && h.log.includes('WALLETO_TRUSTED_ORIGIN=https://walleto-device.example-tailnet.ts.net'));
+    assert.equal(fs.readFileSync(path.join(h.state, 'deployed-worker-settings'), 'utf8').trim(), 'enabled:12:3:walleto-device.example-tailnet.ts.net');
+  } finally { fs.rmSync(h.dir, { recursive: true, force: true }); }
+});
+
+test('invalid public origins are rejected before the current EC2 container is touched', () => {
+  for (const trustedOrigin of ['http://walleto.example-tailnet.ts.net', 'https://example.com', 'https://walleto.example-tailnet.ts.net/path', 'https://walleto.example-tailnet.ts.net:8443']) {
+    const h = harness({ background: true, trustedOrigin });
+    try {
+      assert.notEqual(h.result.status, 0);
+      assert.match(h.result.stderr, /WALLETO_TRUSTED_ORIGIN/);
+      assert.doesNotMatch(h.log, /docker build|docker rm -f walleto-app/);
+    } finally { fs.rmSync(h.dir, { recursive: true, force: true }); }
+  }
 });
 
 test('changing worker settings redeploys the same commit; unchanged settings do not', () => {

@@ -224,6 +224,43 @@ test('EC2 generation requires loopback, a same-origin bounded empty request and 
   }
 });
 
+test('a configured Tailscale Serve origin reaches the EC2 worker without opening its app port', { timeout: 20000 }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-http-tailnet-'));
+  const source = `require('./lib/market').getMarket=async()=>({currency:'INR',usdToInr:83,prices:{}});
+    require('./lib/scanner').scanWallet=async (_address,network)=>({assets:[{type:'native',symbol:'ETH',rawBalance:'0',decimals:18,price:null},...(network==='bnb'?[{type:'BEP-20',symbol:'BUSD',contract:'0xe9e7cea3dedca5984780bafc599bd69add087d56',rawBalance:'0',decimals:18,price:null}]:[])],...(network==='bnb'?{coverage:'bnb-and-busd'}:{})});
+    require('./server');`;
+  const origin = 'https://walleto-device.example-tailnet.ts.net';
+  const host = 'walleto-device.example-tailnet.ts.net';
+  const child = spawn(process.execPath, ['-e', source], { env: { ...process.env, PORT: '0', WALLETO_BACKGROUND_DIR: dir, WALLETO_TRUSTED_ORIGIN: origin }, stdio: ['ignore', 'pipe', 'pipe'] });
+  try {
+    const port = await childPort(child);
+    const headers = { host, origin, 'content-type': 'application/json' };
+    const endpoint = '/api/background/jobs/generate';
+    assert.equal((await request(port, 'POST', endpoint, { ...headers, host: 'evil.example' }, '{}')).status, 403);
+    assert.equal((await request(port, 'POST', endpoint, { ...headers, origin: 'https://other.example-tailnet.ts.net' }, '{}')).status, 403);
+    assert.equal((await request(port, 'POST', endpoint, { host, 'content-type': 'application/json' }, '{}')).status, 403);
+    const generated = await request(port, 'POST', endpoint, headers, '{}');
+    assert.equal(generated.status, 202);
+    const { id, token } = generated.body;
+    assert.equal((await request(port, 'GET', `/api/background/jobs/${id}`, { host, authorization: `Bearer ${token}` })).status, 200);
+    const stop = `/api/background/jobs/${id}/stop-generation`;
+    assert.equal((await request(port, 'POST', stop, { ...headers, authorization: `Bearer ${token}` })).status, 202);
+    let status;
+    for (let i = 0; i < 150; i++) {
+      status = (await request(port, 'GET', `/api/background/jobs/${id}`, { host, authorization: `Bearer ${token}` })).body;
+      if (status.status === 'finished') break;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.equal(status.status, 'finished');
+    // Some private reverse proxies send the incoming HTTPS Origin but set the
+    // upstream Host to loopback; accept this only for the configured origin.
+    const proxyHeaders = { ...headers, host: `127.0.0.1:${port}` };
+    const proxied = await request(port, 'POST', endpoint, proxyHeaders, '{}');
+    assert.equal(proxied.status, 202);
+    assert.equal((await request(port, 'POST', `/api/background/jobs/${proxied.body.id}/stop-generation`, { ...proxyHeaders, authorization: `Bearer ${proxied.body.token}` })).status, 202);
+  } finally { await stopChild(child); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('public-address CSV jobs require the private tunnel, enforce size and retain their kind on recovery', { timeout: 20000 }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-http-csv-'));
   const source = `require('./lib/market').getMarket=async()=>({currency:'INR',usdToInr:83,prices:{}});

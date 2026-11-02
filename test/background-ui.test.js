@@ -112,6 +112,16 @@ test('file selection on a public site is blocked without any local parsing or sc
   dom.window.close();
 });
 
+test('a signed-in Tailscale device can use the private dashboard URL without a local SSH tunnel', async () => {
+  const ctx = setup({ url: 'https://walleto-device.example-tailnet.ts.net/', savedJob: true, jobKind: 'generated' });
+  const { dom, $, requests } = ctx;
+  try {
+    await until(() => requests.some(item => item.url.includes('/dashboard')));
+    assert.doesNotMatch($('progress-text').textContent, /connection unavailable/i);
+    assert.equal(requests.some(item => item.url.includes('/dashboard')), true);
+  } finally { dom.window.close(); }
+});
+
 test('selecting a file uploads it directly, shows progress in the main dashboard, and never scans it locally', async () => {
   const ctx = setup(); const { dom, w, $, xhrs, requests, confirmations } = ctx;
   const file = new w.File([phrase], 'sensitive.txt');

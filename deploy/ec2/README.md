@@ -1,6 +1,6 @@
 # Deploy Walleto on EC2 with automatic updates
 
-This setup uses **Ubuntu 24.04 LTS** and Docker. A domain is optional: use an SSH tunnel for private access without one, or a domain and Caddy for a public HTTPS site. An EC2 systemd timer checks this public GitHub repository's `main` branch about once a minute. When its commit changes, the instance builds an image, runs the tests during the build, checks a candidate container, and replaces the running app. It uses no GitHub token or inbound webhook. Direct pushes to `main` also deploy, not just merged pull requests.
+This setup uses **Ubuntu 24.04 LTS** and Docker. A domain is optional: use an SSH tunnel or a Tailscale Serve URL for private access without one, or a domain and Caddy for a public HTTPS site. An EC2 systemd timer checks this public GitHub repository's `main` branch about once a minute. When its commit changes, the instance builds an image, runs the tests during the build, checks a candidate container, and replaces the running app. It uses no GitHub token or inbound webhook. Direct pushes to `main` also deploy, not just merged pull requests.
 
 **These deployment files must first be merged into `main`** before the commands below will find them. This is preparation, not an active deployment. The instance must be running with outbound access to GitHub, npm, Docker Hub, balance providers (Blockscout and PublicNode), CoinGecko and ExchangeRate-API (plus certificate services if using public HTTPS). If several commits arrive between checks, the timer deploys the newest one, not necessarily every intermediate commit. Build, test, network or health-check failures prevent that update; the timer retries and the old app stays up or rollback is attempted. Monitor failures rather than assuming every deployment succeeds.
 
@@ -51,9 +51,49 @@ Keep that terminal open, then open **http://127.0.0.1:8080/** in a browser on th
 
 This doesn't make the app audited or protect against a compromised browser, extension or server. **Use only public wallet addresses; do not import valuable seed phrases.** A public website with HTTPS needs a separate public TLS setup; opening the EC2 IP over HTTP is not a safe substitute. The automatic deployment timer works the same way with or without a domain.
 
+## 3B. No domain: access privately with Tailscale Serve
+
+Tailscale Serve gives your EC2 dashboard a stable HTTPS `*.ts.net` URL that works on devices signed into your Tailscale network, without opening inbound web ports or running the app on your laptop. This is **not** an internet-public site: only devices allowed by your tailnet policy can connect. Keep the tailnet limited to people/devices you trust. Use **Serve**, never **Funnel**; Funnel publishes the service to the public internet.
+
+1. Install Tailscale on EC2 using the [official Linux installation instructions](https://tailscale.com/download/linux), then run `sudo tailscale up`. Complete the one-time authorization URL using the Tailscale account you control. Install the Tailscale app on your Windows computer and sign in to the same tailnet. Confirm you can see both devices in the Tailscale admin console and that access rules do not grant unwanted users access. Enable MagicDNS and HTTPS certificates for the tailnet if the admin console prompts you; Serve uses these to provide the `*.ts.net` URL.
+2. After the Walleto app has deployed the Tailscale-origin support, enable the private HTTPS proxy on EC2:
+
+   ```sh
+   sudo tailscale serve --bg 3000
+   sudo tailscale serve status
+   ```
+
+   Copy the exact `https://<device>.<tailnet>.ts.net` URL shown by the status command. Serve proxies to the app's existing loopback-bound port; do **not** change the Docker publish binding or open ports 80, 443 or 3000 in the EC2 security group/firewall.
+3. Configure the exact URL as the one trusted browser origin. On EC2:
+
+   ```sh
+   sudo systemctl edit walleto-deploy.service
+   ```
+
+   Add this override, replacing the example with the exact Serve URL (no trailing slash):
+
+   ```ini
+   [Service]
+   Environment="WALLETO_TRUSTED_ORIGIN=https://walleto-device.example-tailnet.ts.net"
+   ```
+
+   Then apply the setting and restart the app through its tested deployment script:
+
+   ```sh
+   sudo systemctl daemon-reload
+   sudo systemctl start walleto-deploy.service
+   sudo journalctl -u walleto-deploy.service -n 60 --no-pager
+   ```
+
+4. On Windows, ensure Tailscale is connected to the same tailnet, then open the exact HTTPS URL reported by `tailscale serve status`. It should continue working when your terminal closes; no SSH command or local web server needs to stay open. Use a trusted browser and device.
+
+Browser storage is isolated by hostname, so saved job links from `http://127.0.0.1:8081/` will not automatically appear at the new `*.ts.net` URL. To reconnect the existing generated job without deleting its results, use the one-time recovery procedure below from an EC2 administrator session, then paste the code into **Add wallets → Reconnect an existing server job** on the Tailscale dashboard. Keep that code and the resulting browser token private.
+
+The app still binds to loopback and accepts the configured Tailscale origin only when it matches exactly. The Host/Origin allowlist is **not authentication**; Tailscale Serve and your tailnet access policy are the network authentication boundary. Do not open the EC2 app port, install a public reverse proxy, or configure Tailscale Funnel. If you remove the override, redeploy; ordinary localhost SSH-tunnel access remains available. Check `sudo tailscale serve status` after a reboot; background Serve settings persist with the Tailscale service.
+
 ## Enable server-only .txt processing and generation privately
 
-**Do not enable this while a current browser scan is running.** Restarting or updating the app can interrupt it. Once it finishes, first remove public access to the dashboard and API: close inbound HTTP/HTTPS and port 3000 in the EC2 security group and firewall, and disable any public reverse proxy that exposes this app. Allow SSH only from your own IP. Verify from outside that the app/API cannot be reached publicly, then use the SSH tunnel in section 3A. The worker has no independent account authentication for job creation. Its localhost Host/Origin checks can be spoofed and are not a substitute for private networking. Never use it on a publicly exposed service.
+**Do not enable this while a current browser scan is running.** Restarting or updating the app can interrupt it. Once it finishes, first remove public access to the dashboard and API: close inbound HTTP/HTTPS and port 3000 in the EC2 security group and firewall, and disable any public reverse proxy that exposes this app. Allow SSH only from your own IP. Verify from outside that the app/API cannot be reached publicly, then use the SSH tunnel in section 3A or a Tailscale Serve URL configured as in section 3B. The worker has no independent account authentication for job creation. Its Host/Origin checks can be spoofed and are not a substitute for private networking. Never use it on a publicly exposed service.
 
 Uploaded phrase `.txt` files contain recovery phrases and are transferred through SSH and processed in EC2 memory. Public-address `.csv` batches are a separate job type and must not contain phrases or private keys; the entire CSV is still transferred to EC2 and temporarily stored encrypted with its key on the same volume. Generated combinations are created on EC2 and enter the same encrypted job workflow; they are not put into browser storage or provider requests. To show which phrase belongs to each positive-balance address, the worker temporarily stores encrypted copies of valid phrases while scanning. For uploads it retains them while any checks are incomplete, then removes phrases for zero-result addresses when the entire job completes without errors. A continuously generated wallet's phrase is removed as soon as all its own checks complete successfully with no positive balance; positive and incomplete generated phrases remain encrypted. Restoring a zero-result address does not restore a discarded phrase. The phrase ciphertext and encryption key are stored in the same SQLite database on the EC2 volume; this is not end-to-end encryption. Administrators, a compromised EC2 server, SQLite journals, disk snapshots and backups may expose phrases or keys. Deleting a job does not guarantee secure erasure. This app is experimental and unaudited: do not use phrases protecting valuable funds. Public-address tracking is safer.
 
@@ -65,7 +105,7 @@ sudo systemctl start walleto-deploy.service
 sudo journalctl -u walleto-deploy.service -n 100 --no-pager
 ```
 
-This restarts the application. The update script mounts `/var/lib/walleto/background-jobs` into the app, where acknowledged jobs and results persist across container restarts. A stopped EC2 instance does not scan. Disk space, network access and provider availability are still required. Open the dashboard through the SSH tunnel and choose a UTF-8 phrase `.txt` file or a public-address `.csv` under **Add wallets → Public address**. Selecting it starts the server upload after you confirm the warning; files are never parsed or scanned locally, and there is no browser fallback. Keep the laptop on until **upload confirmed**; after that EC2 processes it without the browser. Reopen the same browser and SSH URL to see results. Clearing browser storage loses the saved access tokens; an EC2 administrator can reconnect a retained job as described below. Generated scans use the same single worker, encrypted retention, restart recovery and bearer-token safeguards as uploaded jobs.
+This restarts the application. The update script mounts `/var/lib/walleto/background-jobs` into the app, where acknowledged jobs and results persist across container restarts. A stopped EC2 instance does not scan. Disk space, network access and provider availability are still required. Open the dashboard through the SSH tunnel or configured Tailscale Serve URL and choose a UTF-8 phrase `.txt` file or a public-address `.csv` under **Add wallets → Public address**. Selecting it starts the server upload after you confirm the warning; files are never parsed or scanned locally, and there is no browser fallback. Keep the laptop on until **upload confirmed**; after that EC2 processes it without the browser. Reopen the same browser and private EC2 URL to see results. Clearing browser storage loses the saved access tokens; an EC2 administrator can reconnect a retained job as described below. Generated scans use the same single worker, encrypted retention, restart recovery and bearer-token safeguards as uploaded jobs.
 
 A public-address CSV can use the compact headers `phrase_line,btc_native_segwit,evm`, the older separate `ethereum`, `bnb_smart_chain` and `base` columns, or generic `address`, `public_address` or `wallet_address` columns. Other columns are ignored; malformed, unsupported or mismatched address cells are counted and never treated as zero. The CSV must be UTF-8 and no larger than 256 MiB. Duplicate EVM entries across columns are deduplicated; each EVM address is scanned on Ethereum, Base, Arbitrum, Optimism and BNB Smart Chain, and each Bitcoin address on Bitcoin. The CSV is never parsed by the browser and its addresses are not copied to the local watch list. Keep the laptop on until the upload is confirmed; acknowledged imports and scans resume from the persistent job directory. Only public addresses should be in this file: never put recovery phrases or private keys in a CSV.
 
@@ -123,7 +163,7 @@ sudo docker stats --no-stream walleto-app
 df -h /var/lib/walleto
 ```
 
-The app logs `Background scanner limits: 20 concurrent checks, 4 per network.` on startup. The deploy service tracks settings as well as the commit, so a changed override causes a redeploy even when `main` is unchanged. Reopen the same browser and private SSH URL; compare completed network checks over time and watch the **incomplete** count. If failures increase or throughput declines, reduce the settings to 12/3 and redeploy. Do not share recovery phrases, job tokens, wallet lists, or sensitive logs while troubleshooting.
+The app logs `Background scanner limits: 20 concurrent checks, 4 per network.` on startup. The deploy service tracks settings as well as the commit, so a changed override causes a redeploy even when `main` is unchanged. Reopen the same browser and private EC2 URL; compare completed network checks over time and watch the **incomplete** count. If failures increase or throughput declines, reduce the settings to 12/3 and redeploy. Do not share recovery phrases, job tokens, wallet lists, or sensitive logs while troubleshooting.
 
 If CPU or memory is saturated during file processing, a larger compatible EC2 instance may help, but increasing vCPUs alone does not change Walleto's check limits and will not remove external provider limits. Resizing generally requires stopping the instance; wait for uploads and preserve the EBS job volume. Public IPs may change without an Elastic IP, and a larger instance can cost more. Secure any EBS snapshot as sensitive: the job database can contain encrypted recovery phrases and their keys.
 
