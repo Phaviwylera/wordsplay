@@ -279,3 +279,56 @@ test('automatic EC2 generation streams multiple wallets into the private scan an
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('public-address CSV uploads through the private dashboard, shows live Bitcoin/EVM finds, and continues offline', { timeout: 30000 }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-e2e-csv-'));
+  const source = `const http=require('http');const create=http.createServer;http.createServer=listener=>create((req,res)=>{if(req.method==='POST'&&!req.headers.origin&&/jsdom/.test(req.headers['user-agent']||''))req.headers.origin='http://'+req.headers.host;return listener(req,res)});
+    let release;const gate=new Promise(r=>{release=r});process.on('message',()=>release());
+    require('./lib/scanner').scanWallet=async (address,network)=>{if(network==='base')await gate;
+      const positive=network==='bitcoin'||network==='ethereum';const assets=[{name:network==='bitcoin'?'Live Bitcoin':'Live Ether',symbol:network==='bitcoin'?'BTC':'ETH',type:'native',rawBalance:positive?'1000000000000000000':'0',decimals:18,price:'2'}];
+      if(network==='bnb')assets.push({name:'BUSD',symbol:'BUSD',type:'BEP-20',contract:'0xe9e7cea3dedca5984780bafc599bd69add087d56',rawBalance:'0',decimals:18,price:null});
+      return {address,network,assets,...(network==='bnb'?{coverage:'bnb-and-busd'}:{})};};
+    require('./lib/market').getMarket=async()=>({currency:'INR',usdToInr:83,prices:{}});require('./server');`;
+  const child = spawn(process.execPath, ['-e', source], { cwd: process.cwd(), env: { ...process.env, PORT: '0', WALLETO_BACKGROUND_DIR: dir }, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+  let first; let reopened;
+  try {
+    const port = await new Promise((resolve, reject) => {
+      let output = ''; const timer = setTimeout(() => reject(new Error('server startup timeout')), 10000);
+      child.stdout.on('data', chunk => { output += chunk; const match = output.match(/Wallet viewer running on port (\d+)/); if (match) { clearTimeout(timer); resolve(Number(match[1])); } });
+      child.on('exit', code => { clearTimeout(timer); reject(new Error(`server exited: ${code}`)); });
+    });
+    const origin = `http://127.0.0.1:${port}/`; first = page(origin); const w = first.window;
+    const btc = 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4'; const secret = 'IGNORED_SECRET_FIXTURE';
+    const csv = `phrase_line,btc_native_segwit,ethereum,bnb_smart_chain,base,status,private_key\n1,${btc},${address},${address},${address},ok,${secret}\n`;
+    const file = new w.File([csv], 'addresses.csv', { type: 'text/csv' });
+    file.slice = () => { throw new Error('Browser must not slice CSV'); }; file.text = () => { throw new Error('Browser must not read CSV'); };
+    const field = w.document.getElementById('address-file');
+    Object.defineProperty(field, 'files', { configurable: true, value: [file] });
+    field.dispatchEvent(new w.Event('change', { bubbles: true }));
+    await until(() => w.localStorage.getItem('walleto.background-jobs'));
+    const saved = w.localStorage.getItem('walleto.background-jobs'); const [{ id, token, kind }] = JSON.parse(saved);
+    assert.equal(kind, 'addresses'); assert.equal(saved.includes(secret), false); assert.equal(w.localStorage.getItem('walleto.wallets'), null);
+    await until(() => w.document.getElementById('recent-find-list').textContent.includes('Live Bitcoin'));
+    const headers = { Authorization: `Bearer ${token}` };
+    const live = await (await fetch(`${origin}api/background/jobs/${id}/dashboard`, { headers })).json();
+    assert.equal(live.status, 'scanning'); assert.equal(live.total, 6); assert.equal(live.wallets, 2);
+    assert.ok(live.assetCount >= 2); assert.equal(JSON.stringify(live).includes(secret), false);
+    assert.match(w.document.getElementById('portfolio-source').selectedOptions[0].textContent, /Public-address CSV/i);
+    w.document.querySelector('#asset-list .asset-open').click();
+    assert.equal(w.document.getElementById('asset-export-phrase-block').hidden, true);
+    assert.match(w.document.getElementById('asset-export-note').textContent, /public addresses only/i);
+    first.window.close(); first = null; child.send('release scans');
+    let complete;
+    await until(async () => { complete = await (await fetch(`${origin}api/background/jobs/${id}`, { headers })).json(); return complete.status === 'finished'; });
+    assert.equal(complete.completed, 6); assert.equal(complete.incomplete, 0); assert.equal(complete.retainsPhrases, false);
+    reopened = page(origin, saved); const v = reopened.window;
+    await until(() => v.document.getElementById('asset-list').textContent.includes('Live Bitcoin'));
+    assert.match(v.document.getElementById('asset-list').textContent, /Live Ether/);
+    assert.match(v.document.getElementById('portfolio-source').selectedOptions[0].textContent, /Public-address CSV/i);
+    assert.equal(v.document.getElementById('wallet-count').textContent, '2');
+  } finally {
+    first?.window.close(); reopened?.window.close();
+    if (child.exitCode === null && child.signalCode === null) { child.kill('SIGTERM'); await new Promise(resolve => child.once('exit', resolve)); }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

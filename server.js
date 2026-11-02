@@ -4,6 +4,7 @@ const path = require('node:path');
 const handler = require('./api/scan');
 const marketHandler = require('./api/market');
 const market = require('./lib/market');
+const { MAX_ADDRESS_CSV_BYTES } = require('./lib/address-csv');
 const publicDir = path.join(__dirname, 'public');
 // Enable only on a loopback-published EC2 container accessed by SSH tunnel.
 // The persistent directory must be private to the service account.
@@ -69,7 +70,7 @@ const server = http.createServer(async (req, res) => {
       const link = recovery.redeem(input?.code);
       if (!link) return send(404, { error: 'Recovery code is invalid, expired or already used.' });
       const status = jobs.status(link.id, link.token);
-      return send(200, status?.kind === 'generated' ? { ...link, kind: 'generated' } : link);
+      return send(200, ['generated', 'addresses'].includes(status?.kind) ? { ...link, kind: status.kind } : link);
     }
     if (req.method === 'POST' && url.pathname === '/api/background/jobs/generate') {
       if (req.headers.origin !== `http://${req.headers.host}` || req.headers['content-type'] !== 'application/json') return send(403, { error: 'Invalid generation origin.' });
@@ -81,6 +82,15 @@ const server = http.createServer(async (req, res) => {
       if (!input || Array.isArray(input) || typeof input !== 'object' || Object.keys(input).length) return send(400, { error: 'Invalid generation request.' });
       const generated = await jobs.generate();
       return generated ? send(202, generated) : send(409, { error: 'An automatic generator is already running.' });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/background/jobs/addresses') {
+      if (req.headers.origin !== `http://${req.headers.host}` || req.headers['content-type'] !== 'application/octet-stream') return send(403, { error: 'Invalid upload origin.' });
+      if (Number(req.headers['content-length']) > MAX_ADDRESS_CSV_BYTES) { res.setHeader('Connection', 'close'); req.resume(); return send(413, { error: 'CSV exceeds the 256 MiB upload limit.' }); }
+      try { return send(202, await jobs.receive(req, { kind: 'addresses' })); }
+      catch (error) {
+        if (!res.destroyed) return send(error?.code === 'TOO_LARGE' ? 413 : 500, { error: error?.code === 'TOO_LARGE' ? 'CSV exceeds the 256 MiB upload limit.' : 'Upload did not complete. Try again while connected.' });
+        return;
+      }
     }
     const match = url.pathname.match(/^\/api\/background\/jobs\/([a-f0-9]{64})(?:\/(results|dashboard|matches|phrase|retry|refresh-bnb|restore-hidden|stop-generation))?$/);
     if (req.method === 'POST' && url.pathname === '/api/background/jobs') {
