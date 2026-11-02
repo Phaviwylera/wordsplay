@@ -5,7 +5,10 @@
   const $ = id => document.getElementById(id);
   const storageKey = 'walleto.background-jobs';
   const legacyStorageKey = 'walleto.background-job';
+  const pendingUploadKey = 'walleto.pending-upload';
   let jobs = []; let job = null; let timer = null; let requestVersion = 0; let uploading = false; let reconnecting = false; let generating = false;
+  let pendingUpload = null; let checkingUpload = false;
+  const jobSummaries = new Map(); let summaryBusy = false; let summaryLastAt = 0; let summaryTimer = null; let summaryQueued = null;
   let storageWarning = false; let refreshingBnb = false; let restoringHidden = false;
   const view = { assetOffset: 0, walletOffset: 0, network: 'all' };
   const state = { data: null, error: '', loading: false, uploadPercent: 0 };
@@ -24,10 +27,30 @@
       }
     }
   } catch (_) { storageWarning = true; }
+  try {
+    const attempt = JSON.parse(localStorage.getItem(pendingUploadKey) || 'null');
+    if (attempt && typeof attempt.id === 'string' && /^[a-f0-9]{64}$/.test(attempt.id)
+      && ['upload', 'addresses', 'addressKeys'].includes(attempt.kind)) pendingUpload = { id: attempt.id, kind: attempt.kind, checkedNotFound: attempt.checkedNotFound === true,
+        ...(Number.isSafeInteger(attempt.size) && attempt.size >= 0 ? { size: attempt.size } : {}),
+        ...(Number.isSafeInteger(attempt.lastModified) && attempt.lastModified >= 0 ? { lastModified: attempt.lastModified } : {}) };
+  } catch (_) { storageWarning = true; }
   job = jobs.at(-1) || null;
   function persistJobs() {
-    try { localStorage.setItem(storageKey, JSON.stringify(jobs)); localStorage.removeItem(legacyStorageKey); storageWarning = false; }
-    catch (_) { storageWarning = true; }
+    try { localStorage.setItem(storageKey, JSON.stringify(jobs)); localStorage.removeItem(legacyStorageKey); storageWarning = false; return true; }
+    catch (_) { storageWarning = true; return false; }
+  }
+  function savePendingUpload(attempt) {
+    pendingUpload = attempt;
+    try { localStorage.setItem(pendingUploadKey, JSON.stringify(attempt)); return true; }
+    catch (_) { storageWarning = true; return false; }
+  }
+  function clearPendingUpload() {
+    pendingUpload = null;
+    try { localStorage.removeItem(pendingUploadKey); } catch (_) { storageWarning = true; }
+  }
+  function makeUploadId() {
+    if (!window.crypto || typeof window.crypto.getRandomValues !== 'function') throw new Error('Secure upload IDs are unavailable in this browser.');
+    return Array.from(window.crypto.getRandomValues(new Uint8Array(32)), byte => byte.toString(16).padStart(2, '0')).join('');
   }
   // Reconnection merges with both current and legacy saved links rather than
   // silently replacing other jobs in this browser. Refuse malformed storage.
@@ -59,7 +82,7 @@
     el.textContent = message; el.hidden = false; el.classList.toggle('error', error);
   }
   function snapshot() {
-    return { hasJob: Boolean(job), jobId: job?.id || null, jobs: jobs.map(item => ({ id: item.id, ...(['generated', 'addresses'].includes(item.kind) ? { kind: item.kind } : {}) })), uploading, generating, storageWarning, ...state, view: { ...view } };
+    return { hasJob: Boolean(job), jobId: job?.id || null, jobs: jobs.map(item => ({ id: item.id, ...(jobSummaries.get(item.id) || {}), ...(['generated', 'addresses'].includes(item.kind) ? { kind: item.kind } : {}) })), uploading, generating, pendingUpload: pendingUpload ? { kind: pendingUpload.kind, checkedNotFound: pendingUpload.checkedNotFound === true } : null, checkingUpload, storageWarning, ...state, view: { ...view } };
   }
   async function request(suffix = '', method = 'GET') {
     if (!job || !privateAccess()) throw new Error('Reconnect through the private SSH tunnel or authenticated Tailscale URL to EC2.');
@@ -69,6 +92,90 @@
       if (!response.ok) throw new Error('Could not load the server job. Check the SSH tunnel, worker configuration, and EC2 deployment.');
       return await response.json();
     } finally { clearTimeout(deadline); }
+  }
+  function summaryFrom(data) {
+    return { status: data.status, kind: data.kind || 'upload', wallets: data.wallets || 0, total: data.total || 0,
+      completed: data.completed || 0, incomplete: data.incomplete || 0, createdAt: data.createdAt || null,
+      lines: data.lines || 0, invalid: data.invalid || 0 };
+  }
+  async function refreshJobSummaries(ids = jobs.slice(-20).map(item => item.id), force = false) {
+    const unique = [...new Set(ids)].filter(id => jobs.some(item => item.id === id)).slice(0, 20);
+    if (!unique.length || !privateAccess()) return;
+    if (summaryBusy) {
+      if (force) summaryQueued = { ids: [...new Set([...(summaryQueued?.ids || []), ...unique])].slice(0, 20), force: true };
+      return;
+    }
+    if (!force && Date.now() - summaryLastAt < 8000) return;
+    summaryBusy = true; summaryLastAt = Date.now(); clearTimeout(summaryTimer);
+    try {
+      await Promise.allSettled(unique.map(async id => {
+        const link = jobs.find(item => item.id === id);
+        if (!link) return;
+        if (job?.id === id && state.data) { jobSummaries.set(id, summaryFrom(state.data)); return; }
+        const response = await fetch(`/api/background/jobs/${id}`, { headers: { Authorization: `Bearer ${link.token}` }, cache: 'no-store', signal: AbortSignal.timeout(7000) });
+        if (!response.ok) throw new Error('Scan status unavailable');
+        const data = await response.json();
+        if (data?.id !== id || !['importing', 'scanning', 'finished', 'failed'].includes(data.status)
+          || !['upload', 'generated', 'addresses'].includes(data.kind)
+          || !Number.isSafeInteger(data.wallets) || !Number.isSafeInteger(data.total)
+          || !Number.isSafeInteger(data.completed) || !Number.isSafeInteger(data.incomplete)) throw new Error('Invalid scan summary');
+        jobSummaries.set(id, summaryFrom(data));
+      }));
+    } finally {
+      summaryBusy = false; notify();
+      if (summaryQueued) {
+        const queued = summaryQueued; summaryQueued = null;
+        summaryTimer = setTimeout(() => refreshJobSummaries(queued.ids, queued.force), 0);
+      } else if (unique.some(id => ['importing', 'scanning'].includes(jobSummaries.get(id)?.status))) {
+        summaryTimer = setTimeout(() => refreshJobSummaries(unique, true), 10000);
+      }
+    }
+  }
+  async function checkPendingUpload() {
+    if (!pendingUpload || checkingUpload) return;
+    if (!privateAccess()) {
+      state.error = 'Reconnect to the private EC2 URL before checking whether the upload was accepted.';
+      importStatus(state.error, true); notify(); return;
+    }
+    const attempt = { ...pendingUpload };
+    checkingUpload = true; $('check-upload').disabled = true; notify();
+    try {
+      const response = await fetch('/api/background/uploads/check', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requestId: attempt.id }), cache: 'no-store',
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!response.ok) throw new Error('EC2 could not confirm this upload yet. Check the private connection and try again.');
+      const result = await response.json();
+      if (!result || typeof result.found !== 'boolean') throw new Error('EC2 returned an invalid upload-status response.');
+      if (!result.found) {
+        const updated = { ...attempt, checkedNotFound: true }; savePendingUpload(updated);
+        state.error = 'No matching upload is recorded on EC2 yet. Re-select the same file to retry safely; the request ID prevents a duplicate if the first request arrives late.';
+        importStatus(state.error, true); notify(); return;
+      }
+      if (result.pending) {
+        savePendingUpload({ ...attempt, checkedNotFound: false });
+        state.error = 'EC2 is still receiving this upload. Wait a moment and check again; do not upload it again yet.';
+        importStatus(state.error, true); notify(); return;
+      }
+      const expectedKind = ['addresses', 'addressKeys'].includes(attempt.kind) ? 'addresses' : 'upload';
+      if (!validJob(result) || result.token !== attempt.id || result.kind !== expectedKind
+        || !['importing', 'scanning', 'finished', 'failed'].includes(result.status)) throw new Error('EC2 found a record but could not safely reconnect it. Keep the attempt and try again.');
+      const recovered = normalizeJob(result);
+      jobs = mergedJobs(jobs, [recovered]); job = recovered; requestVersion++; clearTimeout(timer);
+      state.data = null; state.error = ''; state.loading = false; state.uploadPercent = 0;
+      Object.assign(view, { assetOffset: 0, walletOffset: 0, network: 'all' });
+      const savedLink = persistJobs(); if (savedLink) clearPendingUpload();
+      importStatus(savedLink ? 'Upload found on EC2 and reconnected. No second upload was created.' : 'Upload found on EC2. Browser storage could not save the access link; the request ID was kept so you can check again.', storageWarning);
+      window.dispatchEvent(new Event('file-scan:started')); notify(); await refresh();
+    } catch (error) {
+      if (pendingUpload?.id === attempt.id) {
+        state.error = error?.message || 'Could not check upload status. Keep this attempt and retry the status check before uploading again.';
+        importStatus(state.error, true); notify();
+      }
+    } finally {
+      checkingUpload = false; $('check-upload').disabled = false; notify();
+    }
   }
   function schedule(delay) { clearTimeout(timer); timer = setTimeout(refresh, delay); }
   async function refresh() {
@@ -93,7 +200,8 @@
         || data.assetOffset !== view.assetOffset || data.walletOffset !== view.walletOffset || data.network !== view.network
         || !['importing', 'scanning', 'finished', 'failed'].includes(data.status)) throw new Error('Invalid dashboard response');
       state.data = data; state.error = ''; state.loading = false;
-      notify();
+      jobSummaries.set(current.id, summaryFrom(data));
+      notify(); refreshJobSummaries();
       // Small jobs finish quickly; show their successful results without a
       // four-second wait. Keep larger jobs gentler on EC2 and SQLite.
       if (['importing', 'scanning'].includes(data.status)) schedule(data.total <= 100 ? 1000 : 4000);
@@ -180,7 +288,7 @@
     try {
       const removed = job;
       await request('', 'DELETE');
-      jobs = jobs.filter(item => item.id !== removed.id); persistJobs();
+      jobs = jobs.filter(item => item.id !== removed.id); jobSummaries.delete(removed.id); persistJobs();
       const wasCurrent = removed === job;
       if (wasCurrent) {
         job = jobs.at(-1) || null; requestVersion++; clearTimeout(timer);
@@ -264,10 +372,17 @@
   }
   $('generate-phrase').addEventListener('click', generatePhrase);
   $('file-reconnect').addEventListener('click', reconnectFileJob);
+  $('check-upload').addEventListener('click', checkPendingUpload);
   $('file-recovery-code').addEventListener('keydown', event => {
     if (event.key === 'Enter') { event.preventDefault(); reconnectFileJob(); }
   });
   function uploadFile(file, kind) {
+    if (!pendingUpload) {
+      try {
+        if (!savePendingUpload({ id: makeUploadId(), kind, checkedNotFound: false, size: file.size, lastModified: file.lastModified })) return importStatus('Browser storage could not save the upload-status ID, so the file was not sent.', true);
+      } catch (error) { return importStatus(error.message || 'Could not create a safe upload request ID.', true); }
+    }
+    if (pendingUpload.kind !== kind) return importStatus('A different file type has an unresolved upload. Check its EC2 status first.', true);
     uploading = true; state.uploadPercent = 0; state.error = ''; state.data = null; state.loading = false;
     job = null; requestVersion++; clearTimeout(timer);
     Object.assign(view, { assetOffset: 0, walletOffset: 0, network: 'all' });
@@ -276,27 +391,41 @@
     const xhr = new XMLHttpRequest();
     xhr.open('POST', kind === 'addresses' ? '/api/background/jobs/addresses' : kind === 'addressKeys' ? '/api/background/jobs/address-keys' : '/api/background/jobs');
     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    xhr.setRequestHeader('X-Walleto-Upload-ID', pendingUpload.id);
     xhr.upload.onprogress = event => {
       if (event.lengthComputable && event.total > 0) state.uploadPercent = Math.max(0, Math.min(100, Math.floor(event.loaded * 100 / event.total)));
       notify();
     };
     const failed = () => {
-      uploading = false; state.error = 'Upload status is unknown. EC2 may have accepted it; check the server before retrying.';
-      importStatus(state.error, true); notify();
+      uploading = false; state.error = 'Upload status is unknown. Check EC2 for this upload before retrying.';
+      importStatus(state.error, true); notify(); checkPendingUpload();
     };
     xhr.onerror = failed; xhr.onabort = failed;
     xhr.onload = () => {
       uploading = false;
       let result;
       try { result = JSON.parse(xhr.responseText); } catch (_) { return failed(); }
-      const addressJob = kind === 'addresses' || kind === 'addressKeys';
-      if (xhr.status !== 202 || !validJob(result) || (addressJob && result.kind !== 'addresses')) {
-        state.error = xhr.status === 413 && kind === 'addresses' ? 'CSV exceeds the 256 MiB upload limit.' : xhr.status === 413 && kind === 'addressKeys' ? 'Address/private-key file exceeds the 256 MiB upload limit.' : 'Upload was not confirmed. Check the private tunnel and EC2 worker before retrying.';
+      if (xhr.status === 202 && result?.pending === true) {
+        savePendingUpload({ ...pendingUpload, checkedNotFound: false });
+        state.error = 'EC2 is still receiving this upload. Check again in a moment; do not send it again yet.';
         importStatus(state.error, true); notify(); return;
       }
+      const addressJob = kind === 'addresses' || kind === 'addressKeys';
+      if (xhr.status !== 202 || !validJob(result) || (addressJob && result.kind !== 'addresses')) {
+        if (xhr.status === 413) {
+          clearPendingUpload();
+          state.error = kind === 'addresses' ? 'CSV exceeds the 256 MiB upload limit.' : kind === 'addressKeys' ? 'Address/private-key file exceeds the 256 MiB upload limit.' : 'Upload exceeds the server limit.';
+          importStatus(state.error, true); notify(); return;
+        }
+        if ([400, 403].includes(xhr.status)) clearPendingUpload();
+        state.error = xhr.status === 409 && result?.error ? result.error : 'Upload was not confirmed. Check EC2 for this upload before retrying.';
+        importStatus(state.error, true); notify();
+        if (![400, 403, 409].includes(xhr.status)) checkPendingUpload();
+        return;
+      }
       job = normalizeJob(result);
-      jobs.push(job); persistJobs();
-      const warning = storageWarning ? ' Browser storage failed; keep this page open or access to this job may be lost.' : '';
+      jobs = mergedJobs(jobs, [job]); const savedLink = persistJobs(); if (savedLink) clearPendingUpload();
+      const warning = storageWarning ? ' Browser storage failed; keep this page open or check upload status again before leaving.' : '';
       importStatus(`Upload confirmed. EC2 continues processing even if this laptop is off.${warning}`, storageWarning);
       refresh();
     };
@@ -315,7 +444,17 @@
     if (!privateAccess()) return importStatus('File import requires the private SSH tunnel or authenticated Tailscale URL to EC2. The file was not processed or uploaded in this browser.', true);
     try { localStorage.setItem(`${storageKey}.test`, '1'); localStorage.removeItem(`${storageKey}.test`); }
     catch (_) { return importStatus('Browser storage is unavailable; the server job could not be safely linked for reconnection.', true); }
-    const confirmation = addressKeys
+    if (pendingUpload) {
+      if (pendingUpload.kind !== kind) return importStatus('A different file type has an unresolved upload. Check its EC2 status first.', true);
+      if (pendingUpload.size !== undefined && (pendingUpload.size !== file.size || pendingUpload.lastModified !== file.lastModified)) return importStatus('Choose the same file as the unresolved upload attempt; this selection was not sent.', true);
+      if (!pendingUpload.checkedNotFound) {
+        importStatus('Checking EC2 for the earlier upload first. The selected file was not sent.', true);
+        checkPendingUpload(); return;
+      }
+    }
+    const confirmation = pendingUpload?.checkedNotFound
+      ? `EC2 reported no matching job. Retry this same file using the same safe request ID? ${addressKeys ? 'Raw private keys will be sent over the private tunnel and temporarily stored encrypted on EC2.' : addresses ? 'This public-address file will be sent to EC2.' : 'This phrase file will be sent to EC2 and temporarily stored encrypted.'} Do not continue if this is not the original file.`
+      : addressKeys
       ? 'Upload this address/private-key file to EC2? Raw private keys will be sent over the private tunnel and temporarily stored encrypted on EC2 while the worker verifies each pair and derives public addresses. The encryption key is on the same volume, so an administrator, compromise, snapshot or backup could expose them; secure erasure is not guaranteed. Only verified public addresses and scan results remain in the job. Continue only if you accept sending raw private keys to EC2; do not use keys protecting valuable funds.'
       : addresses
         ? 'Upload this public-address CSV to EC2? The entire file is sent to the server and temporarily stored encrypted, with its key on the same EC2 volume. Include public addresses only: remove any recovery phrases or private keys first. Keep this laptop on until the upload is confirmed. Continue only through a private SSH or authenticated Tailscale connection?'
@@ -327,8 +466,9 @@
   $('address-file').addEventListener('change', () => selectUpload('address-file', 'addresses'));
   $('address-key-file').addEventListener('change', () => selectUpload('address-key-file', 'addressKeys'));
   window.addEventListener('beforeunload', event => { if (uploading || generating) { event.preventDefault(); event.returnValue = ''; } });
-  window.addEventListener('pagehide', () => { $('file-recovery-code').value = ''; requestVersion++; clearTimeout(timer); });
+  window.addEventListener('pagehide', () => { $('file-recovery-code').value = ''; requestVersion++; clearTimeout(timer); clearTimeout(summaryTimer); });
   window.addEventListener('pageshow', event => { if (event.persisted && job) refresh(); });
-  window.fileScan = { snapshot, setView, select, refresh, restoreHidden, refreshBnb, retry, stopGeneration, resumeGeneration, remove, phrase };
+  window.fileScan = { snapshot, setView, select, refresh, refreshJobSummaries, restoreHidden, refreshBnb, retry, stopGeneration, resumeGeneration, remove, phrase, checkPendingUpload };
   if (job) refresh();
+  if (pendingUpload) setTimeout(checkPendingUpload, 500);
 })();

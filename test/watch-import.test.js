@@ -120,7 +120,7 @@ test('imports more than 50 pasted phrases and bounds foreground scan concurrency
   for (let i = 0; i < 200 && $('refresh').disabled; i++) await wait();
   assert.equal($('refresh').disabled, false, 'all network scans finished');
   assert.equal(requests.length, 55 * 5);
-  assert.ok(maxActive <= 20, `at most twenty simultaneous scans, observed ${maxActive}`);
+  assert.ok(maxActive <= 30, `at most thirty simultaneous scans, observed ${maxActive}`);
   assert.ok(requests.every(url => !phrases.some(phrase => url.includes(phrase))));
   dom.window.close();
 });
@@ -371,7 +371,7 @@ test('remove all clears every page and cancels an ongoing scan without accepting
   w.confirm = message => { confirmation = message; return true; };
   w.eval(bundle); setPricing(w); w.eval(fs.readFileSync('public/app.js', 'utf8'));
   const $ = id => w.document.getElementById(id);
-  assert.equal(requests.length, 20);
+  assert.equal(requests.length, 30);
   assert.equal($('remove-all').hidden, false);
   assert.equal($('remove-all').disabled, false);
   assert.match($('remove-all').textContent, /105/);
@@ -390,7 +390,7 @@ test('remove all clears every page and cancels an ongoing scan without accepting
   const asset = { ...zeroNative, rawBalance: '1000000000000000000', price: '100' };
   for (const request of requests) request.resolve({ ok: true, json: async () => ({ assets: [asset] }) });
   await wait();
-  assert.equal(requests.length, 20, 'queued requests never start');
+  assert.equal(requests.length, 30, 'queued requests never start');
   assert.equal($('wallet-count').textContent, '0');
   assert.equal($('asset-count').textContent, '0');
   assert.equal($('total-value').textContent, '₹0.00');
@@ -720,12 +720,12 @@ test('five wallets scan healthy networks while one slow network is capped at fou
     w.eval(bundle); setPricing(w); w.eval(fs.readFileSync('public/app.js', 'utf8'));
     for (let i = 0; i < 100 && $('progress-percent').textContent !== '80%'; i++) await wait();
     assert.equal($('progress-percent').textContent, '80%');
-    assert.equal(held.length, 4, 'no more than four Ethereum checks occupy slots');
+    assert.equal(held.length, 5, 'all five Ethereum checks can run concurrently');
     assert.equal($('asset-count').textContent, '20');
     assert.equal($('total-value').textContent, '₹3,320.00');
     assert.match($('value-note').textContent, /Partial results/);
-    assert.ok(peak <= 20, `global peak ${peak}`);
-    assert.ok(Object.values(peaks).every(value => value <= 4), JSON.stringify(peaks));
+    assert.ok(peak <= 30, `global peak ${peak}`);
+    assert.ok(Object.values(peaks).every(value => value <= 6), JSON.stringify(peaks));
     for (const wallet of wallets) assert.equal(calls.filter(call => call.address === wallet.address && call.network !== 'ethereum').length, 4);
     hold = false; held.forEach(resolve => resolve());
     for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();

@@ -244,3 +244,27 @@ td:last-child,th:last-child{text-align:right}
 .recent-find-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:7px}
 .recent-find{min-width:0;padding:9px 10px;border:1px solid #e5e1f0;border-radius:6px;background:#fff;text-align:left;color:#39354f}
 .recent-find:hover{border-color:#aaa0ce}.recent-find strong,.recent-find small{display:block;overflow-wrap:anywhere}.recent-find strong{font-size:11px}.recent-find small{margin-top:4px;font-size:10px;line-height:1.4;color:#777286}
+
+/* Compact multi-scan workspace: up to twenty recent jobs appear as tiles. */
+.portfolio-switch{display:inline-flex;gap:2px;padding:3px;border:1px solid #e2dfeb;border-radius:7px;background:#f7f6fa}
+.portfolio-switch button{min-height:29px;padding:0 10px;border:0;border-radius:5px;background:transparent;color:#6c697b;font-size:11px;font-weight:700;white-space:nowrap}
+.portfolio-switch button[aria-pressed="true"]{background:#fff;color:#443d6a;box-shadow:0 1px 3px #28213c1a}
+.scan-jobs{padding:17px 18px;margin-bottom:16px}
+.scan-jobs-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:13px}
+.scan-jobs-heading h2{font-size:15px;letter-spacing:-.2px}
+.scan-jobs-heading p{margin-top:3px;color:#777486;font-size:11px}
+.scan-jobs-count{padding:4px 8px;border:1px solid #e7e3f2;border-radius:99px;background:#f7f5fc;color:#655c91;font-size:10px;font-weight:700;white-space:nowrap}
+.scan-job-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:9px}
+.scan-job-card{display:block;width:100%;min-width:0;padding:11px 12px;border:1px solid #e5e3ec;border-radius:8px;background:#fff;color:#39364c;text-align:left;transition:border-color .15s,background .15s,transform .15s}
+.scan-job-card:hover{border-color:#aca3ce;background:#fcfbff;transform:translateY(-1px)}
+.scan-job-card[aria-current="true"]{border-color:#8176b0;box-shadow:0 0 0 2px #eeebf7;background:#faf9ff}
+.scan-job-card-top{display:flex;align-items:center;justify-content:space-between;gap:7px}
+.scan-job-card-title{font-size:11px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scan-job-status{flex:none;color:#777286;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.03em}
+.scan-job-status.running{color:#6d629b}.scan-job-status.failed,.scan-job-status.partial{color:#a4424c}.scan-job-status.finished{color:#477e60}
+.scan-job-card-meta{display:block;margin-top:7px;color:#777486;font-size:10px;line-height:1.4}
+.scan-job-progress{display:block;width:100%;height:4px;margin-top:8px;border:0;border-radius:99px;background:#efedf4;accent-color:#756ba5}
+.scan-job-pager{display:flex;justify-content:center;align-items:center;gap:10px;margin-top:12px;color:#777486;font-size:10px}
+.scan-job-pager button{min-height:27px;padding:0 9px;border:1px solid #e1deea;border-radius:5px;background:#fff;color:#514984;font-size:10px;font-weight:700}
+.scan-job-pager button:disabled{opacity:.45}
+@media(max-width:560px){.scan-jobs{padding:14px}.scan-job-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}.scan-job-card{padding:9px}.scan-job-card-title{font-size:10px}.portfolio-switch{width:100%}.portfolio-switch button{flex:1}}
