@@ -6,8 +6,9 @@
   const storageKey = 'walleto.background-jobs';
   const legacyStorageKey = 'walleto.background-job';
   const pendingUploadKey = 'walleto.pending-upload';
+  const browserClientKey = 'walleto.browser-client-id';
   let jobs = []; let job = null; let timer = null; let requestVersion = 0; let uploading = false; let reconnecting = false; let generating = false;
-  let pendingUpload = null; let checkingUpload = false;
+  let pendingUpload = null; let checkingUpload = false; let syncingJobs = false;
   const jobSummaries = new Map(); let summaryBusy = false; let summaryLastAt = 0; let summaryTimer = null; let summaryQueued = null;
   let storageWarning = false; let refreshingBnb = false; let restoringHidden = false;
   const view = { assetOffset: 0, walletOffset: 0, network: 'all' };
@@ -76,13 +77,54 @@
   }
   const privateAccess = () => (location.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(location.hostname))
     || (location.protocol === 'https:' && location.hostname.endsWith('.ts.net') && !location.port);
+  const privateTailnetAccess = () => location.protocol === 'https:' && location.hostname.endsWith('.ts.net') && !location.port;
   function notify() { window.dispatchEvent(new Event('file-scan:update')); }
   function importStatus(message, error = false) {
     const el = $('import-status');
     el.textContent = message; el.hidden = false; el.classList.toggle('error', error);
   }
+  function browserClientId() {
+    let id = localStorage.getItem(browserClientKey);
+    if (!/^[a-f0-9]{64}$/.test(id || '')) {
+      id = makeUploadId(); localStorage.setItem(browserClientKey, id);
+    }
+    return id;
+  }
+  async function syncPrivateJobs() {
+    if (!privateTailnetAccess() || syncingJobs) return;
+    if (uploading || reconnecting) { setTimeout(syncPrivateJobs, 1000); return; }
+    syncingJobs = true; notify();
+    const oldJobId = job?.id || null;
+    try {
+      const clientId = browserClientId();
+      const response = await fetch('/api/background/jobs/sync', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clientId }), cache: 'no-store', signal: AbortSignal.timeout(10000),
+      });
+      if (!response.ok) throw new Error('Private scan sync was not accepted. Check that the EC2 app is updated.');
+      const result = await response.json();
+      if (!result || !Array.isArray(result.jobs) || !result.jobs.every(item => validJob(item)
+        && (item.kind === undefined || ['generated', 'addresses'].includes(item.kind)))) throw new Error('EC2 returned an invalid scan list.');
+      const knownIds = new Set(jobs.map(item => item.id));
+      const addedCount = result.jobs.filter(item => !knownIds.has(item.id)).length;
+      jobs = mergedJobs(jobs, result.jobs.map(normalizeJob)); persistJobs();
+      const selected = jobs.find(item => item.id === oldJobId) || jobs.at(-1) || null;
+      job = selected;
+      if (job && (!oldJobId || job.id !== oldJobId)) {
+        requestVersion++; clearTimeout(timer); state.data = null; state.error = ''; state.loading = false;
+        Object.assign(view, { assetOffset: 0, walletOffset: 0, network: 'all' });
+        window.dispatchEvent(new Event('file-scan:started'));
+      }
+      if (addedCount > 0) importStatus(`Synced ${addedCount.toLocaleString()} saved EC2 scan${addedCount === 1 ? '' : 's'}. Everyone allowed on this tailnet can view, reveal retained phrases, and manage saved jobs.`);
+      notify();
+      if (job) await refresh();
+    } catch (error) {
+      importStatus(error?.message || 'Could not sync saved scans from private EC2.', true);
+      notify(); if (job) await refresh();
+    } finally { syncingJobs = false; notify(); }
+  }
   function snapshot() {
-    return { hasJob: Boolean(job), jobId: job?.id || null, jobs: jobs.map(item => ({ id: item.id, ...(jobSummaries.get(item.id) || {}), ...(['generated', 'addresses'].includes(item.kind) ? { kind: item.kind } : {}) })), uploading, generating, pendingUpload: pendingUpload ? { kind: pendingUpload.kind, checkedNotFound: pendingUpload.checkedNotFound === true } : null, checkingUpload, storageWarning, ...state, view: { ...view } };
+    return { hasJob: Boolean(job), jobId: job?.id || null, jobs: jobs.map(item => ({ id: item.id, ...(jobSummaries.get(item.id) || {}), ...(['generated', 'addresses'].includes(item.kind) ? { kind: item.kind } : {}) })), uploading, generating, pendingUpload: pendingUpload ? { kind: pendingUpload.kind, checkedNotFound: pendingUpload.checkedNotFound === true } : null, checkingUpload, syncingJobs, storageWarning, ...state, view: { ...view } };
   }
   async function request(suffix = '', method = 'GET') {
     if (!job || !privateAccess()) throw new Error('Reconnect through the private SSH tunnel or authenticated Tailscale URL to EC2.');
@@ -467,8 +509,12 @@
   $('address-key-file').addEventListener('change', () => selectUpload('address-key-file', 'addressKeys'));
   window.addEventListener('beforeunload', event => { if (uploading || generating) { event.preventDefault(); event.returnValue = ''; } });
   window.addEventListener('pagehide', () => { $('file-recovery-code').value = ''; requestVersion++; clearTimeout(timer); clearTimeout(summaryTimer); });
-  window.addEventListener('pageshow', event => { if (event.persisted && job) refresh(); });
-  window.fileScan = { snapshot, setView, select, refresh, refreshJobSummaries, restoreHidden, refreshBnb, retry, stopGeneration, resumeGeneration, remove, phrase, checkPendingUpload };
-  if (job) refresh();
+  window.addEventListener('pageshow', event => {
+    if (!event.persisted) return;
+    if (privateTailnetAccess()) syncPrivateJobs(); else if (job) refresh();
+  });
+  window.addEventListener('focus', () => { if (privateTailnetAccess()) syncPrivateJobs(); });
+  window.fileScan = { snapshot, setView, select, refresh, refreshJobSummaries, restoreHidden, refreshBnb, retry, stopGeneration, resumeGeneration, remove, phrase, checkPendingUpload, syncPrivateJobs };
+  if (privateTailnetAccess()) syncPrivateJobs(); else if (job) refresh();
   if (pendingUpload) setTimeout(checkPendingUpload, 500);
 })();

@@ -25,8 +25,9 @@ const recovery = jobs ? require('./lib/file-job-recovery').createFileJobRecovery
 if (workerLimits) {
   console.log(`Background scanner limits: ${workerLimits.concurrency} concurrent checks, ${workerLimits.perNetworkConcurrency} per network.`);
   // Only an operator with access to the container's private Unix socket can
-  // issue a one-time code. HTTP can redeem a code but cannot list jobs or
-  // create codes, and this does not start a second worker process.
+  // issue a one-time recovery code. The private same-origin Tailscale/SSH HTTP
+  // route can synchronize browser access to existing jobs; this starts no
+  // second worker and must never be exposed to the public internet.
   require('./lib/file-job-recovery').listenRecoveryControl(process.env.WALLETO_BACKGROUND_DIR, recovery)
     .catch(() => console.error('Private file-job recovery control is unavailable.'));
 }
@@ -81,6 +82,17 @@ const server = http.createServer(async (req, res) => {
     const send = (code, body) => { res.statusCode = code; res.end(JSON.stringify(body)); };
     try {
     if (!jobs || !privateBackgroundRequest(req)) return send(403, { error: 'Private EC2 access requires a configured SSH tunnel or Tailscale Serve origin and the EC2 worker.' });
+    if (req.method === 'POST' && url.pathname === '/api/background/jobs/sync') {
+      if (!privateBackgroundSameOrigin(req) || req.headers['content-type'] !== 'application/json') return send(403, { error: 'Invalid private scan-sync request origin.' });
+      if (Number(req.headers['content-length']) > 1024) { req.resume(); return send(413, { error: 'Scan-sync request too large.' }); }
+      const raw = await readSmallBody(req);
+      if (raw === null) return send(413, { error: 'Scan-sync request too large.' });
+      let input;
+      try { input = JSON.parse(raw); } catch (_) { return send(400, { error: 'Invalid scan-sync request.' }); }
+      if (!input || Array.isArray(input) || typeof input !== 'object' || Object.keys(input).length !== 1 || typeof input.clientId !== 'string') return send(400, { error: 'Invalid scan-sync request.' });
+      const synced = jobs.syncBrowserJobs(input.clientId);
+      return synced ? send(200, { jobs: synced }) : send(400, { error: 'Invalid browser ID.' });
+    }
     if (req.method === 'POST' && url.pathname === '/api/background/uploads/check') {
       if (!privateBackgroundSameOrigin(req) || req.headers['content-type'] !== 'application/json') return send(403, { error: 'Invalid upload-status request origin.' });
       if (Number(req.headers['content-length']) > 1024) { req.resume(); return send(413, { error: 'Upload-status request too large.' }); }

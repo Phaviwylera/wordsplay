@@ -57,6 +57,17 @@ test('background endpoints require SSH-style loopback host, same origin and a jo
     const checked = await request(port, 'POST', '/api/background/uploads/check', checkHeaders, JSON.stringify({ requestId: uploadId }));
     assert.equal(checked.status, 200); assert.equal(checked.body.found, true);
     assert.equal(checked.body.id, duplicateUpload.body.id); assert.equal(checked.body.token, uploadId);
+    const syncHeaders = { host, origin: `http://${host}`, 'content-type': 'application/json' };
+    assert.equal((await request(port, 'POST', '/api/background/jobs/sync', { ...syncHeaders, origin: 'http://evil.example' }, JSON.stringify({ clientId: 'd'.repeat(64) }))).status, 403);
+    assert.equal((await request(port, 'POST', '/api/background/jobs/sync', { host, 'content-type': 'application/json' }, JSON.stringify({ clientId: 'd'.repeat(64) }))).status, 403);
+    assert.equal((await request(port, 'POST', '/api/background/jobs/sync', syncHeaders, JSON.stringify({ clientId: 'invalid' }))).status, 400);
+    const clientId = 'd'.repeat(64);
+    const synced = await request(port, 'POST', '/api/background/jobs/sync', syncHeaders, JSON.stringify({ clientId }));
+    assert.equal(synced.status, 200);
+    assert.ok(synced.body.jobs.some(link => link.id === id && link.token === clientId));
+    assert.ok(synced.body.jobs.some(link => link.id === duplicateUpload.body.id && link.token === clientId));
+    assert.equal((await request(port, 'GET', `/api/background/jobs/${id}`, { host, authorization: `Bearer ${clientId}` })).status, 200);
+    assert.equal((await request(port, 'GET', `/api/background/jobs/${id}`, { host, authorization: `Bearer ${token}` })).status, 200, 'sync must preserve existing browser credentials');
     assert.equal((await request(port, 'POST', '/api/background/uploads/check', { ...checkHeaders, origin: 'http://evil.example' }, JSON.stringify({ requestId: uploadId }))).status, 403);
     assert.equal((await request(port, 'POST', '/api/background/uploads/check', checkHeaders, JSON.stringify({ requestId: 'invalid' }))).status, 400);
     const market = await request(port, 'GET', '/api/market', { host });
@@ -253,6 +264,10 @@ test('a configured Tailscale Serve origin reaches the EC2 worker without opening
     assert.equal(generated.status, 202);
     const { id, token } = generated.body;
     assert.equal((await request(port, 'GET', `/api/background/jobs/${id}`, { host, authorization: `Bearer ${token}` })).status, 200);
+    const clientId = 'e'.repeat(64);
+    const synced = await request(port, 'POST', '/api/background/jobs/sync', headers, JSON.stringify({ clientId }));
+    assert.equal(synced.status, 200); assert.ok(synced.body.jobs.some(link => link.id === id && link.token === clientId));
+    assert.equal((await request(port, 'GET', `/api/background/jobs/${id}`, { host, authorization: `Bearer ${clientId}` })).status, 200);
     const stop = `/api/background/jobs/${id}/stop-generation`;
     assert.equal((await request(port, 'POST', stop, { ...headers, authorization: `Bearer ${token}` })).status, 202);
     let status;
