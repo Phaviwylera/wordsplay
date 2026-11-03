@@ -22,7 +22,7 @@ async function until(check, timeout = 5000) {
   const start = Date.now();
   while (!check()) { if (Date.now() - start > timeout) throw new Error('File dashboard UI did not finish'); await wait(); }
 }
-function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets = null, assets, recentAssets = [], wallets, hiddenAddresses, restoreFails = false, incomplete = 0, getPhrase, dashboardHook, watchFetch, recover, generate, jobKind, addressFormat, hasBnbChecks, generationActive = false, generationReason, market = { currency: 'INR', usdToInr: 83, prices: {} }, knownValue, jobStatus = 'finished', uploadStatus, savedJobs, timers } = {}) {
+function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets = null, assets, recentAssets = [], wallets, hiddenAddresses, restoreFails = false, incomplete = 0, getPhrase, dashboardHook, watchFetch, recover, generate, syncJobs, jobKind, addressFormat, hasBnbChecks, generationActive = false, generationReason, market = { currency: 'INR', usdToInr: 83, prices: {} }, knownValue, jobStatus = 'finished', uploadStatus, savedJobs, timers } = {}) {
   const dom = new JSDOM(html, { url, runScripts: 'outside-only' });
   const w = dom.window; const $ = id => w.document.getElementById(id);
   if (timers) { const original = w.setTimeout.bind(w); w.setTimeout = (fn, delay, ...args) => { timers.push(delay); return original(fn, delay, ...args); }; }
@@ -54,6 +54,7 @@ function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets 
   w.fetch = async (resource, options = {}) => {
     const target = String(resource); requests.push({ url: target, options });
     if (target.startsWith('/api/scan')) return watchFetch ? watchFetch(target, options) : { ok: true, json: async () => ({ assets: [{ ...native, rawBalance: '0' }] }) };
+    if (target === '/api/background/jobs/sync') return syncJobs ? syncJobs(options) : { ok: true, json: async () => ({ jobs: [] }) };
     if (target === '/api/background/reconnect') return recover ? recover(options) : { ok: false };
     if (target === '/api/background/uploads/check') return uploadStatus ? uploadStatus(options) : { ok: true, json: async () => ({ found: false }) };
     if (target === '/api/background/jobs/generate') return generate ? generate(options) : { ok: false, status: 404 };
@@ -130,6 +131,32 @@ test('a signed-in Tailscale device can use the private dashboard URL without a l
     await until(() => requests.some(item => item.url.includes('/dashboard')));
     assert.doesNotMatch($('progress-text').textContent, /connection unavailable/i);
     assert.equal(requests.some(item => item.url.includes('/dashboard')), true);
+  } finally { dom.window.close(); }
+});
+
+test('a new Tailscale browser automatically syncs and opens saved EC2 jobs without a recovery code', async () => {
+  let clientId;
+  const ctx = setup({
+    url: 'https://walleto-device.example-tailnet.ts.net/',
+    syncJobs: options => {
+      clientId = JSON.parse(options.body).clientId;
+      return { ok: true, json: async () => ({ jobs: [{ id: id2, token: clientId, kind: 'addresses' }] }) };
+    },
+  });
+  const { dom, $, requests } = ctx;
+  try {
+    await until(() => requests.some(item => item.url.includes(`/jobs/${id2}/dashboard`)));
+    assert.match(clientId, /^[a-f0-9]{64}$/);
+    assert.equal(dom.window.localStorage.getItem('walleto.browser-client-id'), clientId);
+    assert.deepEqual(JSON.parse(dom.window.localStorage.getItem('walleto.background-jobs')),
+      [{ id: id2, token: clientId, kind: 'addresses' }]);
+    const dashboardRequest = requests.find(item => item.url.includes(`/jobs/${id2}/dashboard`));
+    assert.equal(dashboardRequest.options.headers.Authorization, `Bearer ${clientId}`);
+    const syncRequest = requests.find(item => item.url === '/api/background/jobs/sync');
+    assert.ok(syncRequest, 'browser calls the private automatic sync endpoint');
+    assert.equal(requests.some(item => item.url === '/api/background/reconnect'), false);
+    assert.equal($('portfolio-source').value, `file:${id2}`);
+    assert.match($('import-status').textContent, /synced 1 saved EC2 scan/i);
   } finally { dom.window.close(); }
 });
 

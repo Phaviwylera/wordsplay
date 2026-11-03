@@ -78,6 +78,29 @@ test('upload request IDs reveal receiving state and make duplicate transfers ide
   } finally { jobs.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('private browser sync grants persistent access without replacing recovery tokens', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-browser-sync-'));
+  const jobs = createBackgroundJobs(dir, { scan: fakeScan });
+  const clientId = 'd'.repeat(64); const replacementToken = 'e'.repeat(64);
+  try {
+    const accepted = await jobs.receive(Readable.from(`${phrase}\n`));
+    assert.deepEqual(jobs.syncBrowserJobs('invalid'), null);
+    const links = jobs.syncBrowserJobs(clientId);
+    assert.equal(links.length, 1);
+    assert.deepEqual(links[0], { id: accepted.id, token: clientId });
+    assert.equal(jobs.authorized(accepted.id, clientId), true);
+    assert.equal(jobs.authorized(accepted.id, accepted.token), true);
+    assert.equal(jobs.authorized(accepted.id, 'f'.repeat(64)), false);
+    assert.deepEqual(jobs.syncBrowserJobs(clientId), links);
+    assert.equal(jobs.rotateRecoveryToken(accepted.id, replacementToken), true);
+    assert.equal(jobs.authorized(accepted.id, clientId), false);
+    assert.equal(jobs.authorized(accepted.id, accepted.token), false);
+    assert.equal(jobs.authorized(accepted.id, replacementToken), true);
+    assert.equal(jobs.syncBrowserJobs(clientId).length, 1);
+    assert.equal(jobs.authorized(accepted.id, clientId), true);
+  } finally { jobs.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('failed and partial checks remain incomplete and can be retried', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-jobs-'));
   let retry = false;
