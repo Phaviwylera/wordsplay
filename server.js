@@ -165,7 +165,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && action === 'dashboard') {
       const quote = await dashboardMarket();
       const dashboard = jobs.dashboard(id, token, {
-        assetOffset: url.searchParams.get('assetOffset'), walletOffset: url.searchParams.get('walletOffset'), network: url.searchParams.get('network') || 'all', prices: quote.prices,
+        assetOffset: url.searchParams.get('assetOffset'), walletOffset: url.searchParams.get('walletOffset'), network: url.searchParams.get('network') || 'all',
+        sort: url.searchParams.get('sort') || 'default', sortDirection: url.searchParams.get('sortDirection') || 'asc', prices: quote.prices,
       });
       return dashboard ? send(200, { ...dashboard, market: quote }) : send(404, { error: 'Job not found.' });
     }

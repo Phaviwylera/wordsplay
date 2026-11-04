@@ -11,7 +11,7 @@
   let pendingUpload = null; let checkingUpload = false; let syncingJobs = false;
   const jobSummaries = new Map(); let summaryBusy = false; let summaryLastAt = 0; let summaryTimer = null; let summaryQueued = null;
   let storageWarning = false; let refreshingBnb = false; let restoringHidden = false;
-  const view = { assetOffset: 0, walletOffset: 0, network: 'all' };
+  const view = { assetOffset: 0, walletOffset: 0, network: 'all', sort: 'default', sortDirection: 'asc' };
   const state = { data: null, error: '', loading: false, uploadPercent: 0 };
   const validJob = item => item && typeof item.id === 'string' && /^[a-f0-9]{64}$/.test(item.id) && typeof item.token === 'string' && /^[a-f0-9]{64}$/.test(item.token);
   const normalizeJob = item => ({ id: item.id, token: item.token, ...(['generated', 'addresses'].includes(item.kind) ? { kind: item.kind } : {}) });
@@ -228,7 +228,7 @@
       state.loading = false; notify(); return;
     }
     const version = ++requestVersion; const current = job;
-    const params = new URLSearchParams({ assetOffset: String(view.assetOffset), walletOffset: String(view.walletOffset), network: view.network });
+    const params = new URLSearchParams({ assetOffset: String(view.assetOffset), walletOffset: String(view.walletOffset), network: view.network, sort: view.sort, sortDirection: view.sortDirection });
     state.loading = true; notify();
     try {
       const data = await request(`/dashboard?${params}`);
@@ -240,6 +240,7 @@
         || !(data.knownValue === null || Number.isFinite(data.knownValue))
         || ((data.visibleWallets !== undefined || data.hiddenWallets !== undefined) && (!Number.isSafeInteger(data.visibleWallets) || data.visibleWallets < 0 || !Number.isSafeInteger(data.hiddenWallets) || data.hiddenWallets < 0 || data.visibleWallets + data.hiddenWallets !== data.wallets))
         || data.assetOffset !== view.assetOffset || data.walletOffset !== view.walletOffset || data.network !== view.network
+        || data.sort !== view.sort || data.sortDirection !== view.sortDirection
         || !['importing', 'scanning', 'finished', 'failed'].includes(data.status)) throw new Error('Invalid dashboard response');
       state.data = data; state.error = ''; state.loading = false;
       jobSummaries.set(current.id, summaryFrom(data));
@@ -259,8 +260,11 @@
       assetOffset: Number.isSafeInteger(next.assetOffset) && next.assetOffset >= 0 ? next.assetOffset : view.assetOffset,
       walletOffset: Number.isSafeInteger(next.walletOffset) && next.walletOffset >= 0 ? next.walletOffset : view.walletOffset,
       network: typeof next.network === 'string' ? next.network : view.network,
+      sort: ['default', 'asset', 'network', 'balance', 'value'].includes(next.sort) ? next.sort : view.sort,
+      sortDirection: ['asc', 'desc'].includes(next.sortDirection) ? next.sortDirection : view.sortDirection,
     };
-    if (updated.assetOffset === view.assetOffset && updated.walletOffset === view.walletOffset && updated.network === view.network) return;
+    if (updated.assetOffset === view.assetOffset && updated.walletOffset === view.walletOffset && updated.network === view.network
+      && updated.sort === view.sort && updated.sortDirection === view.sortDirection) return;
     Object.assign(view, updated);
     if (job) refresh(); else notify();
   }

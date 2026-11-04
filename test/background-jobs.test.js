@@ -270,6 +270,15 @@ test('the dashboard pages positive assets and wallet states on the server withou
     const second = jobs.dashboard(id, token, { assetOffset: 100, walletOffset: 1, network: 'ethereum' });
     assert.equal(second.assets.length, 6); assert.equal(second.walletPage.length, 1);
     assert.equal(second.filteredAssetCount, 106); assert.ok(second.assets.every(item => item.network === 'ethereum'));
+    const balanceSorted = jobs.dashboard(id, token, { network: 'ethereum', sort: 'balance', sortDirection: 'desc' });
+    assert.equal(balanceSorted.sort, 'balance'); assert.equal(balanceSorted.sortDirection, 'desc');
+    assert.equal(balanceSorted.assets[0].asset.rawBalance, '2', 'largest token quantity sorts first across the full server result set');
+    const lowBalance = jobs.dashboard(id, token, { network: 'ethereum', sort: 'balance', sortDirection: 'asc' });
+    assert.equal(lowBalance.assets[0].asset.name, 'Ether', 'ascending quantity order puts the smaller balance first');
+    const nameSorted = jobs.dashboard(id, token, { network: 'ethereum', sort: 'asset', sortDirection: 'asc' });
+    assert.equal(nameSorted.assets[0].asset.name, 'Ether');
+    const valueSorted = jobs.dashboard(id, token, { network: 'ethereum', sort: 'value', sortDirection: 'desc', prices: {} });
+    assert.equal(valueSorted.assets[0].asset.name, 'Token 0', 'highest priced value sorts before unpriced assets');
     const filtered = jobs.dashboard(id, token, { network: 'base' });
     assert.equal(filtered.assetCount, 106); assert.equal(filtered.filteredAssetCount, 0); assert.equal(filtered.assets.length, 0);
     retry = true; assert.equal(jobs.retry(id, token), true); await finished(jobs, id, token);

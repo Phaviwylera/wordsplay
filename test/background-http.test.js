@@ -50,6 +50,8 @@ test('background endpoints require SSH-style loopback host, same origin and a jo
     const dashboard = await request(port, 'GET', `/api/background/jobs/${id}/dashboard?assetOffset=0&walletOffset=0&network=ethereum`, { host, authorization: `Bearer ${token}` });
     assert.equal(dashboard.status, 200); assert.deepEqual(dashboard.body.assets, []); assert.deepEqual(dashboard.body.walletPage, []);
     assert.equal(dashboard.body.network, 'ethereum'); assert.equal(dashboard.body.market.usdToInr, 83);
+    const sortedDashboard = await request(port, 'GET', `/api/background/jobs/${id}/dashboard?sort=balance&sortDirection=desc`, { host, authorization: `Bearer ${token}` });
+    assert.equal(sortedDashboard.status, 200); assert.equal(sortedDashboard.body.sort, 'balance'); assert.equal(sortedDashboard.body.sortDirection, 'desc');
     const uploadId = 'c'.repeat(64);
     const duplicateUpload = await request(port, 'POST', '/api/background/jobs', { ...headers, 'x-walleto-upload-id': uploadId }, '');
     assert.equal(duplicateUpload.status, 202);

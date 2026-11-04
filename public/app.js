@@ -46,11 +46,13 @@ let exportOpener = null;
 const pendingExportUrls = new Set();
 let walletPage = 0;
 let assetPage = 0;
+let assetSortKey = 'default'; let assetSortDirection = 'asc';
 let fileAssetPage = 0;
 let fileWalletPage = 0;
 let viewMode = fileScan?.snapshot().hasJob || fileScan?.snapshot().pendingUpload ? 'file' : 'watch';
 let watchInitialized = false;
 const PAGE_SIZE = 100;
+const assetSortCollator = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true });
 const SCAN_CONCURRENCY = 30;
 const SCANS_PER_NETWORK = 6;
 // Reuse one limiter across refreshes: aborted requests that are still winding
@@ -168,7 +170,43 @@ function walletScanLabel(wallet) {
   if (state.failed) return { css: 'incomplete', label: `⚠ Incomplete · ${state.failed} failed` };
   return { css: 'complete', label: state.limited ? '✓ Scanned · limited token coverage on some networks' : state.hasAssets ? '✓ Scanned · assets found' : '✓ Scanned · no assets found' };
 }
+function sortAssets(items) {
+  if (assetSortKey === 'default') return items;
+  const direction = assetSortDirection === 'asc' ? 1 : -1;
+  const valueOf = asset => {
+    if (assetSortKey === 'asset') return `${asset.name || ''} ${asset.symbol || ''}`;
+    if (assetSortKey === 'network') return asset.meta?.name || asset.network || '';
+    if (assetSortKey === 'balance') return asset.balance;
+    if (asset.price === null || !Number.isFinite(asset.balance * asset.price)) return null;
+    return asset.balance * asset.price;
+  };
+  return [...items].sort((left, right) => {
+    const a = valueOf(left); const b = valueOf(right);
+    if (a === null && b !== null) return 1;
+    if (b === null && a !== null) return -1;
+    if (a === null && b === null) return 0;
+    const compared = typeof a === 'string' ? assetSortCollator.compare(a, b) : a - b;
+    return compared * direction;
+  });
+}
+function updateAssetSortHeaders() {
+  document.querySelectorAll('[data-asset-sort]').forEach(button => {
+    const key = button.dataset.assetSort; const active = key === assetSortKey;
+    const arrow = button.querySelector('[aria-hidden="true"]');
+    if (arrow) arrow.textContent = active ? (assetSortDirection === 'asc' ? '↑' : '↓') : '↕';
+    button.closest('th')?.setAttribute('aria-sort', active ? (assetSortDirection === 'asc' ? 'ascending' : 'descending') : 'none');
+    button.setAttribute('aria-label', `Sort by ${button.dataset.label}${active ? (assetSortDirection === 'asc' ? ', ascending' : ', descending') : ''}`);
+  });
+}
+function toggleAssetSort(key) {
+  if (!['asset', 'network', 'balance', 'value'].includes(key)) return;
+  if (assetSortKey === key) assetSortDirection = assetSortDirection === 'asc' ? 'desc' : 'asc';
+  else { assetSortKey = key; assetSortDirection = key === 'balance' || key === 'value' ? 'desc' : 'asc'; }
+  if (viewMode === 'file') { fileAssetPage = 0; syncFileView(); }
+  else { assetPage = 0; render(); }
+}
 function renderAssetRows(items, rate) {
+  updateAssetSortHeaders();
   renderedAssets = items;
   $('#asset-list').innerHTML = renderedAssets.map((asset, index) => {
     const note = asset.stale ? ' · previous balance; check incomplete' : asset.checkStatus === 'partial' || asset.checkStatus === 'failed' ? ' · check incomplete' : ['pending', 'running'].includes(asset.checkStatus) ? ' · updating' : '';
@@ -178,7 +216,7 @@ function renderAssetRows(items, rate) {
   }).join('');
 }
 function syncFileView() {
-  fileScan?.setView({ assetOffset: fileAssetPage * PAGE_SIZE, walletOffset: fileWalletPage * PAGE_SIZE, network: $('#network-filter').value });
+  fileScan?.setView({ assetOffset: fileAssetPage * PAGE_SIZE, walletOffset: fileWalletPage * PAGE_SIZE, network: $('#network-filter').value, sort: assetSortKey, sortDirection: assetSortDirection });
 }
 function renderHiddenControls(hidden, total, file, publicOnly = false) {
   $('#restore-hidden').hidden = hidden === 0;
@@ -218,7 +256,8 @@ function renderFile() {
   $('#wallet-description').textContent = data?.kind === 'addresses' ? 'Public addresses uploaded and scanned on EC2.' : 'Addresses derived and scanned on EC2.';
   const totalWallets = data?.wallets || 0; const hiddenWallets = data?.hiddenWallets || 0;
   const count = data?.visibleWallets ?? totalWallets; const assetCount = data?.assetCount || 0; const filteredCount = data?.filteredAssetCount || 0;
-  const hasView = Boolean(data && data.network === state.view.network && data.assetOffset === state.view.assetOffset && data.walletOffset === state.view.walletOffset);
+  const hasView = Boolean(data && data.network === state.view.network && data.assetOffset === state.view.assetOffset && data.walletOffset === state.view.walletOffset
+    && data.sort === assetSortKey && data.sortDirection === assetSortDirection);
   const nextAssetPage = Math.min(fileAssetPage, Math.max(0, Math.ceil(filteredCount / PAGE_SIZE) - 1));
   const nextWalletPage = Math.min(fileWalletPage, Math.max(0, Math.ceil(count / PAGE_SIZE) - 1));
   if (hasView && (nextAssetPage !== fileAssetPage || nextWalletPage !== fileWalletPage)) {
@@ -362,7 +401,8 @@ function render() {
   walletPage = Math.min(walletPage, Math.max(0, Math.ceil(visibleWallets.length / PAGE_SIZE) - 1));
   assetPage = Math.min(assetPage, Math.max(0, Math.ceil(visible.length / PAGE_SIZE) - 1));
   $('#wallet-list').innerHTML = visibleWallets.slice(walletPage * PAGE_SIZE, (walletPage + 1) * PAGE_SIZE).map(wallet => { const state = walletScanLabel(wallet); return `<div class="wallet-row"><span class="wallet-avatar">◈</span><div class="wallet-info"><strong title="${escapeHtml(wallet.address)}">${escapeHtml(wallet.address)}</strong><span class="wallet-scan-state ${state.css}">${escapeHtml(state.label)}</span></div><button class="remove-wallet" data-address="${escapeHtml(wallet.address)}" aria-label="Remove ${escapeHtml(wallet.address)}" title="Remove wallet">×</button></div>`; }).join('');
-  renderAssetRows(visible.slice(assetPage * PAGE_SIZE, (assetPage + 1) * PAGE_SIZE), rate);
+  const sortedAssets = sortAssets(visible);
+  renderAssetRows(sortedAssets.slice(assetPage * PAGE_SIZE, (assetPage + 1) * PAGE_SIZE), rate);
   updatePager('wallet', walletPage, visibleWallets.length);
   updatePager('asset', assetPage, visible.length);
   $('#empty-state').hidden = visible.length > 0;
@@ -987,6 +1027,10 @@ window.addEventListener('pricing:update', () => {
   // snapshot rather than repricing just the currently visible rows.
   if (viewMode === 'file' && !marketSnapshot().loading && fileScan?.snapshot().hasJob) fileScan.refresh();
   else render();
+});
+$('#asset-sort-head').addEventListener('click', event => {
+  const button = event.target.closest('[data-asset-sort]');
+  if (button) toggleAssetSort(button.dataset.assetSort);
 });
 $('#network-filter').addEventListener('change', () => {
   if (viewMode === 'file') { fileAssetPage = 0; syncFileView(); } else assetPage = 0;
