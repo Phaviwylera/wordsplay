@@ -9,7 +9,7 @@ const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 const { createBackgroundJobs } = require('../lib/background-jobs');
 const { Wallet, Mnemonic } = require('ethers');
-const { BUSD_BSC, USDT_BSC } = require('../lib/prices');
+const { BUSD_BSC, USDT_BSC, BTCB_BSC } = require('../lib/prices');
 
 // Public test phrase. Never fund this account.
 const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
@@ -481,6 +481,34 @@ test('older BNB checks migrate to retryable USDT checks without pretending prune
     assert.equal(page.assets.find(row => row.address === a && row.asset.symbol === 'BUSD').phraseAvailable, true);
     assert.equal(page.assets.find(row => row.address === b && row.asset.symbol === 'BUSD').phraseAvailable, false);
     assert.equal(jobs.phrase(id, token, a), phrase); assert.equal(jobs.phrase(id, token, b), null);
+  } finally { jobs.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('previously complete BNB checks become retryable when BTCB coverage is added', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-btcb-migration-'));
+  const native = { type: 'native', symbol: 'BNB', rawBalance: '0', decimals: 18, price: null };
+  const busd = { type: 'BEP-20', symbol: 'BUSD', contract: BUSD_BSC, rawBalance: '0', decimals: 18, price: null };
+  const usdt = { type: 'BEP-20', symbol: 'USDT', contract: USDT_BSC, rawBalance: '0', decimals: 18, price: null };
+  const btcb = { type: 'BEP-20', symbol: 'BTCB', contract: BTCB_BSC, rawBalance: '0', decimals: 18, price: null };
+  let jobs = createBackgroundJobs(dir, { scan: async (_address, network) => network === 'bnb'
+    ? { coverage: 'bnb-and-stables', assets: [native, busd, usdt] }
+    : { assets: [{ ...native, symbol: 'ETH' }] } });
+  let id; let token;
+  try {
+    ({ id, token } = await jobs.receive(Readable.from(phrase)));
+    assert.equal((await finished(jobs, id, token)).incomplete, 0);
+    jobs.close();
+    const db = new DatabaseSync(path.join(dir, 'jobs.sqlite'));
+    db.prepare('DELETE FROM background_migrations WHERE name = ?').run('bnb-btcb-coverage-v1');
+    db.close();
+    jobs = createBackgroundJobs(dir, { scan: async (_address, network) => network === 'bnb'
+      ? { coverage: 'bnb-and-known', assets: [native, busd, usdt, btcb] }
+      : { assets: [{ ...native, symbol: 'ETH' }] } });
+    const before = jobs.results(id, token).checks.find(check => check.network === 'bnb');
+    assert.equal(before.status, 'partial');
+    assert.match(before.reason, /BTCB was not checked/);
+    assert.equal(jobs.retry(id, token), true);
+    assert.equal((await finished(jobs, id, token)).incomplete, 0);
   } finally { jobs.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

@@ -433,7 +433,7 @@ function render() {
       const reasons = counts[check.network] ||= {};
       reasons[check.reason] = (reasons[check.reason] || 0) + 1;
     }
-    const explanations = { limited: 'Rate limiting detected', invalid: 'Invalid or incomplete indexer data', unavailable: 'Indexer or network unavailable', partial: 'Native balance only; token and NFT data unavailable', busd: 'BUSD/USDT checks unavailable; retry', native: 'Native balance unavailable; token balances may be shown' };
+    const explanations = { limited: 'Rate limiting detected', invalid: 'Invalid or incomplete indexer data', unavailable: 'Indexer or network unavailable', partial: 'Native balance only; token and NFT data unavailable', known: 'Known Ethereum tokens verified; broader token discovery unavailable', busd: 'BUSD/USDT/BTCB checks unavailable; retry', native: 'Native balance unavailable; token balances may be shown' };
     const details = Object.entries(counts).map(([network, reasons]) => {
       const count = Object.values(reasons).reduce((sum, value) => sum + value, 0);
       const breakdown = Object.entries(reasons).map(([reason, number]) => `${explanations[reason]} (${number})`).join('; ');
@@ -535,11 +535,20 @@ function combineSnapshots(first, second, network, address) {
   const a = inspectResult(first, network, address); const b = inspectResult(second, network, address);
   const native = a.native || b.native; const tokens = a.tokens || b.tokens;
   const nativeSource = a.native ? first : second;
-  const tokenSource = a.tokens ? first : second;
+  const bnbKnownSource = network === 'bnb' && ['bnb-and-known', 'bnb-tokens-only'].includes(first.coverage) ? first
+    : network === 'bnb' && ['bnb-and-known', 'bnb-tokens-only'].includes(second.coverage) ? second : null;
+  const tokenSource = bnbKnownSource || (a.tokens ? first : second);
+  const knownTokens = [...new Set([...(a.knownTokens || []), ...(b.knownTokens || [])])];
+  const knownAssets = knownTokens.flatMap(contract => {
+    const source = (a.knownTokens || []).includes(contract) ? first : second;
+    const asset = source.assets.find(item => item.type === 'ERC-20' && item.contract?.toLowerCase() === contract);
+    return asset ? [asset] : [];
+  });
   const assets = [...(native ? nativeSource.assets.filter(asset => asset.type === 'native') : []),
-    ...(tokens ? tokenSource.assets.filter(asset => asset.type !== 'native') : [])];
-  const coverage = native && tokens ? (network === 'bnb' ? 'bnb-and-busd' : 'complete') : native ? 'native-only' : 'tokens-only';
-  return { assets, coverage, components: { native, tokens } };
+    ...(tokens ? tokenSource.assets.filter(asset => asset.type !== 'native') : knownAssets)];
+  const coverage = native && tokens ? (network === 'bnb' ? (bnbKnownSource ? 'bnb-and-known' : 'bnb-and-busd') : 'complete')
+    : native ? 'native-only' : tokens ? 'tokens-only' : knownTokens.length ? 'known-tokens-only' : 'tokens-only';
+  return { assets, coverage, components: { native, tokens, ...(knownTokens.length && !tokens ? { knownTokens } : {}) } };
 }
 function pruneWatchState(scanWallets) {
   const valid = new Set(scanWallets.map(wallet => keyFor(wallet.address)));
@@ -643,7 +652,7 @@ async function scan(mode = false) {
         if (coverage.partial) {
           for (const asset of assetGroups.get(key) || []) asset.checkStatus = 'partial';
           scanData.failed++;
-          failedChecks.set(key, { wallet, network, reason: !coverage.native ? 'native' : network === 'bnb' ? 'busd' : 'partial' });
+          failedChecks.set(key, { wallet, network, reason: !coverage.native ? 'native' : network === 'bnb' ? 'busd' : coverage.knownTokens?.length ? 'known' : 'partial' });
         }
         completedChecks.add(key); scanData.completed++;
         recordWalletScan(wallet, coverage.partial, network);

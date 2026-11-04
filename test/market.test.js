@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createMarketService, CRYPTO_URL, FX_URL } = require('../lib/market');
-const { BUSD_BSC, USDT_BSC, usdPrice } = require('../lib/prices');
+const { BUSD_BSC, USDT_BSC, BTCB_BSC, USDT_ETH, WBTC_ETH, usdPrice } = require('../lib/prices');
 
 test('concurrent market requests are coalesced, cached and use observed BUSD and INR rates', async () => {
   let now = Date.parse('2026-01-10T12:00:00Z'); const calls = []; let offline = false;
@@ -48,12 +48,15 @@ test('bad, stale, missing or rate-limited provider data never invents prices or 
 });
 
 test('quotes identify canonical BUSD by contract and do not price spoofed symbols or collectibles', () => {
-  const quotes = { bnb: 600, busd: 0.97, usdt: 1.01, eth: 2000 };
+  const quotes = { bnb: 600, busd: 0.97, usdt: 1.01, eth: 2000, btc: 91000 };
   assert.equal(usdPrice({ type: 'native', symbol: 'BNB', price: null }, 'bnb', quotes), 600);
   assert.equal(usdPrice({ type: 'BEP-20', symbol: 'BUSD', contract: BUSD_BSC.toUpperCase(), price: null }, 'bnb', quotes), 0.97);
   assert.equal(usdPrice({ type: 'BEP-20', symbol: 'BUSD', contract: '0x123', price: null }, 'bnb', quotes), null);
   assert.equal(usdPrice({ type: 'BEP-20', symbol: 'USDT', contract: USDT_BSC.toUpperCase(), price: null }, 'bnb', quotes), 1.01);
   assert.equal(usdPrice({ type: 'BEP-20', symbol: 'USDT', contract: '0x123', price: null }, 'bnb', quotes), null);
+  assert.equal(usdPrice({ type: 'BEP-20', symbol: 'BTCB', contract: BTCB_BSC, price: null }, 'bnb', quotes), 91000);
+  assert.equal(usdPrice({ type: 'ERC-20', symbol: 'USDT', contract: USDT_ETH, price: null }, 'ethereum', quotes), 1.01);
+  assert.equal(usdPrice({ type: 'ERC-20', symbol: 'WBTC', contract: WBTC_ETH, price: null }, 'ethereum', quotes), 91000);
   assert.equal(usdPrice({ type: 'ERC-721', price: 123 }, 'ethereum', quotes), null);
   assert.equal(usdPrice({ type: 'native', price: '4' }, 'ethereum', {}), 4);
   assert.equal(usdPrice({ type: 'token', price: -1 }, 'base', {}), null);
