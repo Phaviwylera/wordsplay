@@ -551,7 +551,7 @@ test('the BNB and BUSD refresh is an explicit server-only background operation',
   await until(() => !$('file-refresh-bnb').hidden);
   $('file-refresh-bnb').click();
   await until(() => requests.some(item => item.url.endsWith('/refresh-bnb')));
-  assert.match(confirmations[0], /Recheck BNB, BUSD and USDT.*EC2/i);
+  assert.match(confirmations[0], /Recheck BNB, BUSD, USDT and BTCB.*EC2/i);
   const request = requests.find(item => item.url.endsWith('/refresh-bnb'));
   assert.equal(request.options.method, 'POST'); assert.equal(ctx.directCalls(), 0); assert.equal(ctx.deriveCalls(), 0);
   assert.ok(requests.every(item => !item.url.startsWith('/api/scan')));

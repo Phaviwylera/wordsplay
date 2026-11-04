@@ -712,7 +712,7 @@ test('a failed BUSD check stays incomplete and retry replaces the BNB result', a
   };
   $('wallet-address').value = address1; submit(w, $('address-form'));
   for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
-  assert.equal(directCalls, 1); assert.match($('scan-errors').textContent, /BUSD\/USDT checks unavailable/);
+  assert.equal(directCalls, 1); assert.match($('scan-errors').textContent, /BUSD\/USDT\/BTCB checks unavailable/);
   assert.equal($('retry-failed').hidden, false); assert.equal($('total-value').textContent, '₹49,800.00');
   complete = true; $('retry-failed').click();
   for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
