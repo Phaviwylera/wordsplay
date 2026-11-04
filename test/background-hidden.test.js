@@ -150,13 +150,16 @@ test('legacy migration validates completed zero candidates and leaves malformed,
     }
   }
   db.close();
-  const jobs = createBackgroundJobs(dir, { scan: async (_address, network) => complete(network) });
+  const jobs = createBackgroundJobs(dir, { scan: async (address, network) => {
+    if (network === 'ethereum' && [owners[3], owners[5]].includes(address)) return { assets: [{ ...native, rawBalance: '1' }] };
+    return complete(network);
+  } });
   try {
-    let status = jobs.status(id, token);
-    assert.equal(status.wallets, 6); assert.equal(status.hiddenWallets, 1); assert.equal(status.visibleWallets, 5);
-    assert.equal(status.incomplete, 4);
+    let status = await finished(jobs, id, token);
+    assert.equal(status.wallets, 6); assert.equal(status.hiddenWallets, 3); assert.equal(status.visibleWallets, 3);
+    assert.equal(status.incomplete, 2);
     const visible = new Set(jobs.dashboard(id, token).walletPage.map(row => row.address));
-    assert.deepEqual(visible, new Set(owners.slice(1)));
+    assert.deepEqual(visible, new Set([owners[1], owners[3], owners[5]]));
     assert.equal(jobs.dashboard(id, token).assetCount, 2);
     const checks = jobs.results(id, token).checks;
     const malformed = checks.find(row => row.address === owners[1] && row.network === 'base');

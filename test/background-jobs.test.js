@@ -512,6 +512,44 @@ test('previously complete BNB checks become retryable when BTCB coverage is adde
   } finally { jobs.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('legacy completed jobs resume automatically with the updated Ethereum and BNB scanners', { timeout: 15000 }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-multicall-rescan-'));
+  const address = Wallet.fromPhrase(phrase).address;
+  const tokenAsset = (contract, symbol) => ({ type: 'BEP-20', symbol, contract, rawBalance: '0', decimals: 18, price: null });
+  let calls = [];
+  const oldScan = async (_address, network) => {
+    calls.push(network);
+    const native = { type: 'native', symbol: network === 'bnb' ? 'BNB' : network === 'bitcoin' ? 'BTC' : 'ETH', rawBalance: '0', decimals: network === 'bitcoin' ? 8 : 18, price: null };
+    return network === 'bnb' ? { coverage: 'bnb-and-busd', assets: [native, tokenAsset(BUSD_BSC, 'BUSD')] } : { assets: [native] };
+  };
+  let jobs = createBackgroundJobs(dir, { scan: oldScan });
+  let id; let token;
+  try {
+    ({ id, token } = await jobs.receive(Readable.from(phrase)));
+    assert.equal((await finished(jobs, id, token)).incomplete, 0);
+    assert.equal(jobs.status(id, token).hiddenWallets, 1, 'the original verified-zero job is hidden');
+    jobs.close();
+    const db = new DatabaseSync(path.join(dir, 'jobs.sqlite'));
+    db.prepare('DELETE FROM background_migrations WHERE name = ?').run('multicall-rescan-v1');
+    db.close();
+    calls = [];
+    jobs = createBackgroundJobs(dir, { scan: async (_address, network) => {
+      calls.push(network);
+      const native = { type: 'native', symbol: network === 'bnb' ? 'BNB' : 'ETH', rawBalance: '0', decimals: 18, price: null };
+      if (network === 'bnb') return { coverage: 'bnb-and-known', assets: [native, tokenAsset(BUSD_BSC, 'BUSD'), tokenAsset(USDT_BSC, 'USDT'), tokenAsset(BTCB_BSC, 'BTCB')] };
+      return { coverage: 'complete', components: { native: true, tokens: true }, assets: [native] };
+    } });
+    const reopened = jobs.status(id, token);
+    assert.equal(reopened.status, 'scanning');
+    assert.equal(reopened.hiddenWallets, 0, 'the old wallet is visible while the upgraded checks are running');
+    const complete = await finished(jobs, id, token);
+    assert.equal(complete.status, 'finished');
+    assert.equal(complete.incomplete, 0);
+    assert.deepEqual([...new Set(calls)].sort(), ['bnb', 'ethereum'], 'only checks using the updated scan methods are rerun');
+    assert.equal(jobs.results(id, token).checks.find(check => check.network === 'bnb').assets.some(asset => asset.contract === BTCB_BSC), true);
+  } finally { jobs.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('server totals price BNB and canonical BUSD and USDT across all pages, not just visible rows', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walleto-busd-pages-'));
   const jobs = createBackgroundJobs(dir, { scan: fakeScan });
