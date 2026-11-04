@@ -16,19 +16,43 @@ const completeResult = (network, assets) => network === 'bnb' ? { coverage: 'bnb
 const networkOf = url => new URL(url, 'https://wallet.example').searchParams.get('network');
 const setPricing = w => { w.pricing = { snapshot: () => ({ data: { currency: 'INR', usdToInr: 83, prices: {} }, loading: false }), refresh: () => {} }; };
 const bundle = esbuild.buildSync({ entryPoints: ['src/derive.js'], bundle: true, platform: 'browser', format: 'iife', write: false }).outputFiles[0].text;
-function setup() {
+function setup(initialWallets = [], customFetch = null) {
   const dom = new JSDOM(fs.readFileSync('public/index.html', 'utf8'), { url: 'https://wallet.example/', runScripts: 'outside-only' });
   const w = dom.window;
   const requests = [];
+  if (initialWallets.length) w.localStorage.setItem('walleto.wallets', JSON.stringify(initialWallets));
   w.AbortSignal = global.AbortSignal;
   w.TextDecoder = global.TextDecoder;
-  w.fetch = async url => { requests.push(url); return { ok: true, json: async () => completeResult(networkOf(url), [zeroNative]) }; };
+  w.fetch = customFetch || (async url => { requests.push(url); return { ok: true, json: async () => completeResult(networkOf(url), [zeroNative]) }; });
   w.eval(bundle); setPricing(w);
   w.eval(fs.readFileSync('public/app.js', 'utf8'));
   return { dom, w, requests, $: id => w.document.getElementById(id) };
 }
 function submit(w, form) { form.dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true })); }
 const wait = () => new Promise(resolve => setTimeout(resolve, 60));
+
+test('asset table headers sort tracked balances high-to-low and assets alphabetically', async () => {
+  const { dom, w, $ } = setup([{ address: address1 }, { address: address2 }], async url => {
+    const params = new URL(url, 'https://wallet.example').searchParams;
+    const high = params.get('address') === address2;
+    return { ok: true, json: async () => completeResult(params.get('network'), [{
+      name: high ? 'Large balance token' : 'Small balance token', symbol: high ? 'BIG' : 'SMOL', type: 'native',
+      rawBalance: high ? '100' : '4', decimals: 0, price: '1',
+    }]) };
+  });
+  try {
+    for (let i = 0; i < 100 && $('refresh').disabled; i++) await wait();
+    $('network-filter').value = 'ethereum'; $('network-filter').dispatchEvent(new w.Event('change', { bubbles: true }));
+    for (let i = 0; i < 100 && $('asset-list').querySelectorAll('tr').length !== 2; i++) await wait();
+    const balanceHeader = dom.window.document.querySelector('[data-asset-sort="balance"]'); balanceHeader.click();
+    for (let i = 0; i < 100 && $('asset-list').querySelector('tr')?.textContent.includes('Small balance'); i++) await wait();
+    assert.match($('asset-list').querySelector('tr').textContent, /Large balance token/);
+    assert.equal(balanceHeader.closest('th').getAttribute('aria-sort'), 'descending');
+    dom.window.document.querySelector('[data-asset-sort="asset"]').click();
+    assert.match($('asset-list').querySelector('tr').textContent, /Large balance token/);
+    assert.equal(dom.window.document.querySelector('[data-asset-sort="asset"]').closest('th').getAttribute('aria-sort'), 'ascending');
+  } finally { dom.window.close(); }
+});
 
 test('pasted phrases derive multiple addresses, reject invalid lines and deduplicate without storing secrets', async () => {
   const { dom, w, $, requests } = setup();

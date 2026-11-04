@@ -68,14 +68,27 @@ function setup({ url = 'http://127.0.0.1:8080/', savedJob = false, savedWallets 
       const params = new URL(target, url).searchParams;
       if (dashboardHook) await dashboardHook(params);
       const filter = params.get('network'); const assetOffset = Number(params.get('assetOffset')); const walletOffset = Number(params.get('walletOffset'));
-      const filtered = filter === 'all' ? allAssets : allAssets.filter(row => row.network === filter);
+      const sort = params.get('sort') || 'default'; const sortDirection = params.get('sortDirection') || 'asc';
+      const filtered = filter === 'all' ? [...allAssets] : allAssets.filter(row => row.network === filter);
+      if (sort !== 'default') {
+        const sortValue = row => sort === 'asset' ? `${row.asset?.name || ''} ${row.asset?.symbol || ''}`
+          : sort === 'network' ? row.network : sort === 'balance'
+            ? Number(BigInt(row.asset?.rawBalance || '0')) / (10 ** Number(row.asset?.decimals || 0))
+            : row.asset?.price == null ? null : Number(BigInt(row.asset.rawBalance || '0')) / (10 ** Number(row.asset.decimals || 0)) * Number(row.asset.price);
+        filtered.sort((left, right) => {
+          const a = sortValue(left); const b = sortValue(right);
+          if (a === null && b !== null) return 1; if (b === null && a !== null) return -1;
+          const compared = typeof a === 'string' ? a.localeCompare(b) : (a || 0) - (b || 0);
+          return compared * (sortDirection === 'asc' ? 1 : -1);
+        });
+      }
       const visibleWallets = hidden ? allWallets.filter(row => !hidden.has(row.address)) : allWallets;
       const hiddenCount = hidden?.size || 0;
       return { ok: true, json: async () => ({
         id: requestedId, status: jobStatus, ...(jobKind ? { kind: jobKind, generationActive, generationReason, generationTarget: 100 } : {}), ...(addressFormat ? { addressFormat } : {}), ...(hasBnbChecks === undefined ? {} : { hasBnbChecks }), wallets: allWallets.length, ...(hidden ? { hiddenWallets: hiddenCount, visibleWallets: visibleWallets.length } : {}), total: allWallets.length * 5, completed: allWallets.length * 5,
         invalid: 0, incomplete: currentIncomplete, phraseMatching: true, retainsPhrases: true, market,
         knownValue: knownValue ?? allAssets.length * 2, unpriced: 0, assetCount: allAssets.length, filteredAssetCount: filtered.length,
-        assetOffset, walletOffset, network: filter, assets: filtered.slice(assetOffset, assetOffset + 100).map(row => ({ phraseAvailable: true, ...row })),
+        assetOffset, walletOffset, network: filter, sort, sortDirection, assets: filtered.slice(assetOffset, assetOffset + 100).map(row => ({ phraseAvailable: true, ...row })),
         recentAssets: recentAssets.filter(row => filter === 'all' || row.network === filter).map(row => ({ phraseAvailable: true, ...row })), walletPage: visibleWallets.slice(walletOffset, walletOffset + 100),
       }) };
     }
@@ -475,6 +488,33 @@ test('a legacy stored server job is migrated without exposing its token in the s
   assert.equal($('portfolio-source').value, `file:${id}`);
   assert.doesNotMatch($('portfolio-source').outerHTML, new RegExp(token));
   dom.window.close();
+});
+
+test('asset headers sort the full EC2 result set by descending balance and by name', async () => {
+  const assets = [
+    { address, network: 'ethereum', status: 'done', asset: { name: 'Small token', symbol: 'SML', type: 'ERC-20', rawBalance: '4', decimals: 0, price: '1' } },
+    { address: address2, network: 'ethereum', status: 'done', asset: { name: 'Large token', symbol: 'BIG', type: 'ERC-20', rawBalance: '250', decimals: 0, price: '1' } },
+    { address: '0x0000000000000000000000000000000000000001', network: 'ethereum', status: 'done', asset: { name: 'Mid token', symbol: 'MID', type: 'ERC-20', rawBalance: '10', decimals: 0, price: '1' } },
+  ];
+  const ctx = setup({ savedJob: true, assets }); const { dom, $, requests } = ctx;
+  try {
+    await until(() => $('asset-list').querySelectorAll('tr').length === 3);
+    dom.window.document.querySelector('[data-asset-sort="balance"]').click();
+    await until(() => $('asset-list').querySelector('tr')?.textContent.includes('Large token'));
+    assert.equal(dom.window.document.querySelector('[data-asset-sort="balance"]').closest('th').getAttribute('aria-sort'), 'descending');
+    const balanceRequest = requests.filter(item => item.url.includes('/dashboard?')).at(-1);
+    const balanceParams = new URL(balanceRequest.url, 'http://localhost').searchParams;
+    assert.equal(balanceParams.get('sort'), 'balance'); assert.equal(balanceParams.get('sortDirection'), 'desc');
+    dom.window.document.querySelector('[data-asset-sort="balance"]').click();
+    await until(() => $('asset-list').querySelector('tr')?.textContent.includes('Small token'));
+    const ascendingBalance = requests.filter(item => item.url.includes('/dashboard?')).at(-1);
+    assert.equal(new URL(ascendingBalance.url, 'http://localhost').searchParams.get('sortDirection'), 'asc');
+    dom.window.document.querySelector('[data-asset-sort="asset"]').click();
+    await until(() => $('asset-list').querySelector('tr')?.textContent.includes('Large token'));
+    assert.equal(dom.window.document.querySelector('[data-asset-sort="asset"]').closest('th').getAttribute('aria-sort'), 'ascending');
+    const assetRequest = requests.filter(item => item.url.includes('/dashboard?')).at(-1);
+    assert.equal(new URL(assetRequest.url, 'http://localhost').searchParams.get('sort'), 'asset');
+  } finally { dom.window.close(); }
 });
 
 test('file results use one server market snapshot for INR values and per-wallet phrase availability', async () => {
